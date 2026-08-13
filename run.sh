@@ -181,6 +181,10 @@ MOUNT_ARGS=(
 [ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/agents-source:ro")
 
 # --- Run ---
+# Public network profile: msb auto-allows egress and gateway DNS, and keeps
+# inbound closed (only published ports accept traffic; none are published
+# here). The low-level --net-default-ingress deny path silently dropped the
+# DNS allow rule, so every hostname lookup failed with EAI_NONAME.
 exec msb run \
     "${MOUNT_ARGS[@]}" \
     -c "$CPUS" \
@@ -188,7 +192,7 @@ exec msb run \
     --rlimit "nproc=${PIDS}" \
     --security restricted \
     --user 1000:1000 \
-    --net-default-ingress deny \
+    --net public \
     --label "project=${PROJECT_NAME}" \
     -w /workspace \
     "${ENV_ARGS[@]}" \

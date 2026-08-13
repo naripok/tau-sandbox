@@ -137,10 +137,18 @@ The sandbox SHALL run as the unprivileged user `tau` (uid 1000) with the `restri
 - WHEN `id -u` is executed inside
 - THEN it SHALL print `1000`
 
-#### Scenario: Inbound denied
+#### Scenario: Inbound denied, outbound DNS enabled
 
-- GIVEN a running sandbox launch that includes `--net-default-ingress deny`
-- THEN the flag SHALL be present in the `msb run` invocation
+- GIVEN a running sandbox launch that includes the public network profile
+- THEN `--net public` SHALL be present in the `msb run` invocation, granting
+  gateway DNS (which the low-level `--net-default*` surface does not) while
+  keeping inbound closed because no ports are published
+
+#### Scenario: External DNS resolves
+
+- GIVEN a running sandbox
+- WHEN `getent hosts github.com` is executed inside
+- THEN it SHALL exit 0 and print at least one address
 
 ### Requirement: Reset
 

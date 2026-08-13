@@ -168,7 +168,7 @@ Files deleted from the host are **not** removed from the volume (to avoid accide
 | Agent modifies host config         | Mounted `:ro` at `/tau-source` / `/agents-source` — enforced host-side, writable copies go to the volume only                                |
 | Agent escapes to host filesystem   | Hardware-isolated microVM (own kernel). Bind mounts are brokered host-side with path containment and identity virtualization                  |
 | Agent escalates to root in guest   | Runs as unprivileged user `tau` (1000) with the `restricted` security profile (`no_new_privs`, capability drops)                             |
-| Network exfiltration               | Outbound allowed (needed for model APIs and package installs); inbound denied via explicit ingress policy                                    |
+| Network exfiltration               | Outbound + gateway DNS allowed via the `public` network profile; inbound denied (no published ports)                                                  |
 | Persistent volume as attack vector | Volume is microsandbox-managed, not a host bind mount. Intra-project persistence of malicious files is possible but contained                |
 | Secrets leak through images        | API keys are forwarded per-run from host env; never baked into the image                                                                    |
 

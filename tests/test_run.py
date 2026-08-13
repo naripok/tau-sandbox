@@ -150,7 +150,7 @@ def test_run_script_exists_and_executable():
 
 def test_run_script_generates_correct_msb_command():
     """The core contract: project + volume mounts, resources, security
-    profile, user identity, ingress denial, env forwarding, and the
+    profile, user identity, public network profile, env forwarding, and the
     ephemeral-run command shape `msb run ... IMAGE -- CMD`."""
     result, msb_log, _podman_log = invoke_run("bash")
     assert result.returncode == 0, f"stderr: {result.stderr}"
@@ -168,7 +168,11 @@ def test_run_script_generates_correct_msb_command():
     # Security posture
     assert "--security restricted" in run_line
     assert "--user 1000:1000" in run_line
-    assert "--net-default-ingress deny" in run_line
+    # Public profile: egress + gateway DNS from msb, inbound closed (no
+    # published ports). The old --net-default-ingress deny path silently
+    # dropped the DNS allow rule, so it must not come back.
+    assert "--net public" in run_line
+    assert "--net-default-ingress" not in run_line
     # Working directory
     assert "-w /workspace" in run_line
     # Image and command

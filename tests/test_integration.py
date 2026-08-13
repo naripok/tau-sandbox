@@ -11,11 +11,23 @@ fixture. Tests are skipped when msb or podman is unavailable.
 """
 import os
 import pathlib
+import socket
 import subprocess
 
 import pytest
 
 from conftest import TEST_IMAGE_REF, skip_without_msb, volume_name_for
+
+
+def _host_can_resolve(name: str) -> bool:
+    """True when the test host resolves `name` itself — the guest's DNS
+    upstreams come from the host's resolvers, so without this the test
+    would fail for environmental reasons rather than sandbox regressions."""
+    try:
+        socket.getaddrinfo(name, 443)
+    except OSError:
+        return False
+    return True
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 
@@ -78,6 +90,19 @@ class TestSandboxBasics:
         assert result.returncode == 0
         written = (tmp_path / "gen.txt").read_text()
         assert written.strip() == "generated"
+
+    def test_sandbox_resolves_external_hostnames(self, tmp_path, sandbox_home):
+        """Outbound DNS must work inside the microVM. Regression: the
+        earlier `--net-default-ingress deny` low-level policy silently
+        dropped microsandbox's gateway DNS allow rule, so every lookup
+        failed with EAI_NONAME and the agent could not reach model APIs.
+        The `public` network profile is what restores DNS, so this test
+        guards the network flags in run.sh."""
+        if not _host_can_resolve("github.com"):
+            pytest.skip("host cannot resolve github.com; nothing to compare against")
+        result = run_sandbox(tmp_path, sandbox_home, ["getent", "hosts", "github.com"])
+        assert result.returncode == 0, f"guest DNS failed: {result.stderr}"
+        assert "github.com" in result.stdout
 
     def test_tau_is_installed(self, tmp_path, sandbox_home):
         """The declared agent is present inside the sandbox."""
