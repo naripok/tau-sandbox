@@ -1,0 +1,83 @@
+"""Unit tests for the Containerfile.
+
+Prove the image contract the sandbox depends on: a pinned Tau install,
+the declared tool set, the entrypoint, the unprivileged user, and support
+for per-project extra packages via ARG EXTRA_PACKAGES.
+"""
+import pathlib
+
+REPO_ROOT = pathlib.Path(__file__).parent.parent
+CONTAINERFILE = REPO_ROOT / "Containerfile"
+
+
+def _text() -> str:
+    return CONTAINERFILE.read_text()
+
+
+def test_containerfile_exists():
+    assert CONTAINERFILE.exists()
+
+
+def test_containerfile_has_required_directives():
+    text = _text()
+    for directive in ("FROM archlinux:latest", "ENTRYPOINT", "WORKDIR /workspace"):
+        assert directive in text
+
+
+def test_containerfile_has_required_tool_packages():
+    text = _text()
+    for pkg in (
+        "python",
+        "python-pip",
+        "uv",
+        "nodejs",
+        "npm",
+        "git",
+        "openssh",
+        "rsync",
+        "ast-grep",
+        "fd",
+        "ripgrep",
+        "gcc",
+        "make",
+        "curl",
+    ):
+        assert pkg in text
+
+
+def test_containerfile_installs_tau():
+    assert "tau-ai" in _text()
+
+
+def test_containerfile_pins_tau_version():
+    # The image is the upgrade vehicle; builds must be deterministic.
+    assert "ARG TAU_VERSION=" in _text()
+
+
+def test_containerfile_has_entrypoint():
+    text = _text()
+    assert "COPY config/entrypoint.sh" in text
+    assert 'ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' in text
+
+
+def test_containerfile_has_unprivileged_user():
+    text = _text()
+    assert "useradd -m -u 1000 -s /bin/bash tau" in text
+    assert "USER tau" in text
+
+
+def test_containerfile_accepts_extra_packages_arg():
+    assert 'ARG EXTRA_PACKAGES=""' in _text()
+
+
+def test_containerfile_has_build_error_handling():
+    text = _text()
+    assert "package installation failed" in text
+    assert "Exit 1" not in text  # the ||{...} block must exit 1
+    assert "exit 1" in text
+
+
+def test_containerfile_copies_sandbox_config():
+    text = _text()
+    assert "COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md" in text
+    assert "COPY config/.bashrc /etc/tau-sandbox/.bashrc" in text

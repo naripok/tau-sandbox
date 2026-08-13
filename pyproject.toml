@@ -1,0 +1,9 @@
+[project]
+name = "tau-sandbox"
+version = "1.0"
+description = "A microVM sandbox for the Tau coding agent (microsandbox + tau)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pytest>=9.0.3",
+]
