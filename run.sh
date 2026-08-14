@@ -223,10 +223,11 @@ MOUNT_ARGS+=(
 )
 
 # --- Run ---
-# Public network profile: msb auto-allows egress and gateway DNS, and keeps
-# inbound closed (only published ports accept traffic; none are published
-# here). The low-level --net-default-ingress deny path silently dropped the
-# DNS allow rule, so every hostname lookup failed with EAI_NONAME.
+# The public profile allows internet egress and gateway DNS. Add one narrow
+# exception for the LAN GPU server; all other private addresses remain denied.
+# Inbound stays closed because no ports are published. The low-level
+# --net-default-ingress deny path is intentionally avoided because it silently
+# dropped microsandbox's DNS allow rule.
 exec msb run \
     "${MOUNT_ARGS[@]}" \
     -c "$CPUS" \
@@ -236,6 +237,7 @@ exec msb run \
     --tmpfs /tmp \
     --user 1000:1000 \
     --net public \
+    --net-rule "allow@192.168.15.9" \
     --label "project=${PROJECT_NAME}" \
     -w /workspace \
     "${ENV_ARGS[@]}" \

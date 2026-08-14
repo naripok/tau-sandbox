@@ -136,6 +136,10 @@ OPENROUTER_API_KEY=sk-or-...
 VLLM_API_KEY=...
 ```
 
+### Network Access
+
+The launcher uses microsandbox's `public` network profile and adds an exact-IP egress rule for the LAN GPU server at `192.168.15.9`. Agents may connect to that address on any port or protocol while other private-network addresses remain blocked. No guest ports are published, so this does not permit inbound connections to the sandbox.
+
 ### Sandbox Environment Variables
 
 In addition to forwarded host variables, the entrypoint sets sandbox-specific defaults on every boot:
@@ -186,7 +190,7 @@ Host sessions and logs are excluded and replaced by per-project named volumes. T
 | Agent escapes to host filesystem   | Hardware-isolated microVM; mounts are brokered host-side with path containment and identity virtualization                                  |
 | Agent escalates to root in guest   | Runs as unprivileged `tau` (1000), uses the `restricted` profile, and has no setuid/setgid image binaries                                    |
 | Agent modifies the image rootfs    | Root writes are permission-limited and the writable overlay is discarded after every run; `/tmp` is a separate tmpfs                        |
-| Network exfiltration               | Outbound + gateway DNS allowed via the `public` network profile; inbound denied (no published ports)                                                  |
+| Network exfiltration               | Public internet, gateway DNS, and only LAN host `192.168.15.9` are allowed for egress; other private addresses and all unpublished inbound traffic are denied |
 | Persistent volume as attack vector | Volume is microsandbox-managed, not a host bind mount. Intra-project persistence of malicious files is possible but contained                |
 | Secrets leak through images        | API keys are forwarded per-run from host env; never baked into the image                                                                    |
 

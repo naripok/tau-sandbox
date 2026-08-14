@@ -86,6 +86,12 @@ def test_append_system_doc_describes_packages_file():
     assert ".tau-packages" in _read("APPEND_SYSTEM.md")
 
 
+def test_append_system_doc_describes_lan_gpu_access():
+    text = _read("APPEND_SYSTEM.md")
+    assert "192.168.15.9" in text
+    assert "other private-network addresses are blocked" in text
+
+
 # --- entrypoint.sh ---
 
 

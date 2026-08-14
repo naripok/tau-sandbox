@@ -160,16 +160,19 @@ The sandbox SHALL:
 - mount `/tmp` as tmpfs
 - cap processes with `nproc`
 - use the public network profile without publishing inbound ports
+- allow egress to the exact LAN GPU server address `192.168.15.9` without allowing the rest of the private network
 
 #### Scenario: Guest identity is unprivileged
 
 - WHEN `id -u` runs in the guest
 - THEN it SHALL print `1000`
 
-#### Scenario: External DNS works while inbound remains closed
+#### Scenario: External DNS and the designated LAN server are reachable while inbound remains closed
 
 - WHEN the sandbox launches
 - THEN `--net public` SHALL be passed to `msb run`
+- AND `--net-rule allow@192.168.15.9` SHALL permit egress to only the designated private address
+- AND the broad `private` network profile SHALL NOT be enabled
 - AND no inbound port SHALL be published
 
 ### Requirement: Per-project package declarations

@@ -176,10 +176,12 @@ def test_run_script_generates_correct_msb_command():
     assert "--security restricted" in run_line
     assert "--tmpfs /tmp" in run_line
     assert "--user 1000:1000" in run_line
-    # Public profile: egress + gateway DNS from msb, inbound closed (no
-    # published ports). The old --net-default-ingress deny path silently
-    # dropped the DNS allow rule, so it must not come back.
+    # Public profile: internet egress + gateway DNS from msb, one exact LAN
+    # exception for the GPU server, and no published inbound ports. The old
+    # --net-default-ingress deny path dropped DNS, so it must not come back.
     assert "--net public" in run_line
+    assert "--net-rule allow@192.168.15.9" in run_line
+    assert "--net private" not in run_line
     assert "--net-default-ingress" not in run_line
     # Working directory
     assert "-w /workspace" in run_line

@@ -100,16 +100,19 @@ def test_security_profile_and_identity_flags(tmp_path):
     assert "--user 1000:1000" in run_line
 
 
-def test_network_profile_closes_inbound_and_enables_dns(tmp_path):
-    """Inbound stays closed and gateway DNS is granted via the public
-    profile. Regression: the earlier --net-default-ingress deny low-level
-    policy dropped microsandbox's auto DNS allow, so every lookup inside
-    the VM failed with EAI_NONAME and the agent could not reach model
-    APIs. The profile must be used, not the low-level surface."""
+def test_network_policy_allows_only_the_designated_lan_host(tmp_path):
+    """The public profile retains internet and DNS access while an exact-IP
+    rule permits the GPU server without exposing the rest of the private LAN.
+    Inbound remains closed because the launcher publishes no ports."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
-    assert "--net public" in _run_line(msb_log)
-    assert "--net-default-ingress" not in _run_line(msb_log)
+    run_line = _run_line(msb_log)
+    assert "--net public" in run_line
+    assert "--net-rule allow@192.168.15.9" in run_line
+    assert "--net private" not in run_line
+    assert "--net-default-ingress" not in run_line
+    assert " -p " not in run_line
+    assert " --port " not in run_line
 
 
 def test_env_forwarding_is_limited_to_env_file(tmp_path):
