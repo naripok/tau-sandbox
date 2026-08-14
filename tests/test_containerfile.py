@@ -82,5 +82,6 @@ def test_containerfile_has_build_error_handling():
 
 def test_containerfile_copies_sandbox_config():
     text = _text()
+    assert "mkdir -p /etc/tau-sandbox/bootstrap/tau" in text
     assert "COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md" in text
     assert "COPY config/.bashrc /etc/tau-sandbox/.bashrc" in text

@@ -29,9 +29,10 @@ RUN python -m venv /opt/tau && \
 # user that owns the mounted directory.
 RUN useradd -m -u 1000 -s /bin/bash tau
 
-# Static sandbox files: run.sh overlays the current environment reference
-# read-only at runtime; the shell config seeds each persistent home once.
-RUN mkdir -p /etc/tau-sandbox
+# Static sandbox files: run.sh overlays the current environment reference and
+# host-config bootstrap sources read-only at runtime; the entrypoint seeds each
+# persistent home once.
+RUN mkdir -p /etc/tau-sandbox/bootstrap/tau
 COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md
 COPY config/.bashrc /etc/tau-sandbox/.bashrc
 

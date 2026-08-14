@@ -10,7 +10,8 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | --- | --- |
 | `/workspace` | Read-write host project directory |
 | `/home/tau` | Read-write persistent per-project home for tools, shell state, and other files |
-| `/home/tau/.tau/*` | Existing host Tau config entries mounted read-only at their normal paths |
+| `/home/tau/.tau/*` | Writable persistent per-project Tau config, seeded once from host defaults |
+| `/etc/tau-sandbox/bootstrap/tau/*` | Read-only host Tau config sources used only for first-run seeding |
 | `/home/tau/.tau/credentials.json` | Sole writable host-config mount when shared; otherwise project-local |
 | `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Read-write persistent per-project volumes; host history is not mounted |
 | `/home/tau/.tau/trust.json` | Read-write per-project trust state |
@@ -18,7 +19,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/tmp` | Read-write tmpfs, discarded after each run |
 | `/` | Ephemeral writable root overlay, discarded after each run |
 
-Mounted host resources reflect host changes directly; new top-level Tau config entries appear on the next run. `tau-sandbox --reset` deletes the per-project home, sessions, and logs, but not host config or shared credentials.
+Host Tau defaults are copied only when a project's persistent home is first initialized. Later sandbox config changes persist without modifying those host defaults, and later host changes do not overwrite the project copy. `tau-sandbox --reset` deletes the per-project home, sessions, and logs; the next run seeds a fresh copy. Shared credentials and host config remain untouched by reset.
 
 Other projects, the rest of the host home, host SSH keys (unless stored in this project), unrelated dotfiles, host sockets, and paths outside these mounts are inaccessible.
 

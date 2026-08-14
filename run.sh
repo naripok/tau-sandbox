@@ -7,8 +7,9 @@ set -euo pipefail
 
 # --- Configuration (host side) ---
 # TAU_IMAGE: full image reference passed to msb (bypasses .tau-packages).
-# TAU_CONFIG_DIR/TAU_AGENTS_DIR: host resources exposed read-only at their
-# normal sandbox-home paths, except for the writable credentials file.
+# TAU_CONFIG_DIR: host resources exposed read-only as first-run bootstrap
+# sources, except for the writable credentials file. TAU_AGENTS_DIR remains
+# read-only at its normal sandbox-home path.
 # TAU_ENV_FILE: env file whose variables are forwarded into the VM.
 IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
 CONFIG_DIR="${TAU_CONFIG_DIR:-${HOME}/.tau}"
@@ -178,11 +179,12 @@ fi
 
 # --- Mounts ---
 # The project and per-project home are writable. Existing top-level entries in
-# host ~/.tau are mounted individually read-only so Tau discovers them at its
-# normal paths without exposing the host config directory itself as writable.
-# credentials.json is the sole host write exception. Sessions, logs, and trust
-# state stay per-project; the Tau wrapper makes OAuth writes safe for a mounted
-# credential file. Host history and trust decisions are never modified.
+# host ~/.tau are mounted individually read-only under the bootstrap directory;
+# the entrypoint copies them into the persistent home once, where Tau can use
+# atomic replacement without modifying the host defaults. credentials.json is
+# the sole host write exception. Sessions, logs, and trust state stay
+# per-project; the Tau wrapper makes OAuth writes safe for a mounted credential
+# file. Host history and trust decisions are never exposed or modified.
 MOUNT_ARGS=(
     -v "$(pwd):/workspace"
     -v "$PERSIST_VOLUME:/home/tau"
@@ -200,7 +202,7 @@ if [ -d "$CONFIG_DIR" ]; then
                 continue
                 ;;
         esac
-        MOUNT_ARGS+=(-v "$entry:/home/tau/.tau/$name:ro")
+        MOUNT_ARGS+=(-v "$entry:/etc/tau-sandbox/bootstrap/tau/$name:ro")
     done
     shopt -u dotglob nullglob
 fi

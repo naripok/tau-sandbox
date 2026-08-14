@@ -2,7 +2,7 @@
 
 These tests exercise the full launch path (run.sh -> msb run -> boot ->
 entrypoint -> command) and prove the sandbox contract: workspace binding,
-isolated persistent state, ephemeral filesystems, read-only host resources,
+isolated persistent state, ephemeral filesystems, bootstrapped host config,
 the credential write exception, unprivileged execution, environment forwarding,
 and volume isolation between projects.
 
@@ -173,7 +173,7 @@ class TestPersistence:
 
 @pytest.mark.usefixtures("loaded_image", "volume_cleanup")
 class TestHostConfigIsolation:
-    """Host resources are immutable except for shared credentials."""
+    """Host config seeds writable project state; credentials remain shared."""
 
     def test_login_tokens_are_available_to_the_agent(self, tmp_path, sandbox_home):
         tau_host = sandbox_home / ".tau-host"
@@ -202,13 +202,13 @@ class TestHostConfigIsolation:
         assert result.returncode == 0, result.stderr
         assert "new-token" in credentials.read_text()
 
-    def test_host_resources_are_visible_and_readonly(self, tmp_path, sandbox_home):
+    def test_host_resources_bootstrap_once_and_are_writable(self, tmp_path, sandbox_home):
         tau_host = sandbox_home / ".tau-host"
         tau_host.mkdir()
         (tau_host / "skills").mkdir()
         (tau_host / "skills" / "hello.md").write_text("# hello\n")
         settings = tau_host / "settings.json"
-        settings.write_text("{}\n")
+        settings.write_text('{"host": true}\n')
 
         result = run_sandbox(
             tmp_path,
@@ -217,12 +217,46 @@ class TestHostConfigIsolation:
                 "sh",
                 "-c",
                 "test -f /home/tau/.tau/skills/hello.md && "
-                "! echo changed > /home/tau/.tau/settings.json && echo PROTECTED",
+                "cat /home/tau/.tau/settings.json && "
+                "printf '{\"sandbox\": true}\\n' > /home/tau/.tau/settings.json",
             ],
         )
         assert result.returncode == 0, result.stderr
-        assert "PROTECTED" in result.stdout
-        assert settings.read_text() == "{}\n"
+        assert '"host": true' in result.stdout
+        assert settings.read_text() == '{"host": true}\n'
+
+        settings.write_text('{"host": "changed"}\n')
+        result = run_sandbox(
+            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/settings.json"]
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"sandbox": true}'
+        assert settings.read_text() == '{"host": "changed"}\n'
+
+    def test_provider_settings_support_atomic_replacement(self, tmp_path, sandbox_home):
+        """Regression: a file bind mount returns EBUSY when Tau renames its temp
+        file over providers.json. The bootstrapped local copy must be replaceable."""
+        tau_host = sandbox_home / ".tau-host"
+        tau_host.mkdir()
+        providers = tau_host / "providers.json"
+        providers.write_text('{"source": "host"}\n')
+        command = (
+            "temp=$(mktemp /home/tau/.tau/.providers.json.XXXXXX.tmp) && "
+            "printf '{\"source\": \"sandbox\"}\\n' > \"$temp\" && "
+            "mv \"$temp\" /home/tau/.tau/providers.json && "
+            "cat /home/tau/.tau/providers.json"
+        )
+
+        result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", command])
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"source": "sandbox"}'
+        assert providers.read_text() == '{"source": "host"}\n'
+
+        result = run_sandbox(
+            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/providers.json"]
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"source": "sandbox"}'
 
     def test_host_agents_are_readonly(self, tmp_path, sandbox_home):
         agents_host = sandbox_home / ".agents-host"

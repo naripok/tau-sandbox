@@ -2,7 +2,7 @@
 
 Per-project isolation for the [Tau coding agent](https://github.com/huggingface/tau) using [microsandbox](https://github.com/superradcompany/microsandbox) microVMs.
 
-Each project runs in its own hardware-isolated microVM with persistent home, session, and log volumes. Installed tools and shell customizations survive across runs, while Tau sessions and diagnostics remain isolated per project. Host Tau resources are exposed read-only, with `credentials.json` as the sole write exception for OAuth refresh.
+Each project runs in its own hardware-isolated microVM with persistent home, session, and log volumes. Installed tools, Tau configuration, and shell customizations survive across runs, while Tau sessions and diagnostics remain isolated per project. Host Tau configuration seeds each new project sandbox without being modified, with `credentials.json` as the sole write exception for OAuth refresh.
 
 ## The Problem
 
@@ -68,10 +68,12 @@ Projects without `.tau-packages` use the shared base image — zero overhead.
 Host                              Sandbox (microVM)
 ─────────────────                 ─────────────────
 ~/Projects/my-project/   ───────► /workspace                  (read-write)
-~/.tau/*                 ───────► /home/tau/.tau/*           (read-only entries)
+~/.tau/*                 ───────► /etc/tau-sandbox/bootstrap/tau/* (read-only)
+                                      │ first project run
+                                      ▼
+msb home volume          ───────► /home/tau/.tau/*           (read-write copy)
 ~/.tau/credentials.json  ───────► ~/.tau/credentials.json    (read-write exception)
 ~/.agents/               ───────► /home/tau/.agents          (read-only, optional)
-msb home volume          ───────► /home/tau                  (read-write)
 msb sessions volume      ───────► ~/.tau/sessions            (read-write, isolated)
 msb logs volume          ───────► ~/.tau/logs                (read-write, isolated)
 (home volume state)      ───────► ~/.tau/trust.json          (read-write, isolated)
@@ -82,8 +84,8 @@ podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
 - **One project, one sandbox, isolated state.** Each project gets separate home, session, and diagnostic-log volumes keyed by its resolved path.
 - **Ephemeral microVM.** The VM boots with a disposable writable root overlay and explicit `/tmp` tmpfs; both are discarded afterwards. Microsandbox has no container-style `--read-only` rootfs switch, so the image instead runs unprivileged, strips setuid/setgid bits, and relies on the disposable overlay.
 - **Hardware isolation.** The guest has its own kernel; the host is reachable only through explicit mounts enforced host-side.
-- **Read-only host resources.** Existing top-level `~/.tau` entries and `~/.agents` are mounted read-only at Tau's normal paths, excluding isolated state. `credentials.json` alone is writable so rotated OAuth tokens remain valid.
-- **Isolated sessions, logs, and trust.** Tau history, diagnostics, and project trust decisions persist per project rather than modifying host state.
+- **Writable project config from immutable defaults.** Existing top-level `~/.tau` entries are mounted read-only at a bootstrap path and copied into the persistent project home once. Tau can atomically update providers, model choices, thinking effort, settings, and other local config without changing the host defaults. `~/.agents` remains read-only, and `credentials.json` alone stays shared and writable so rotated OAuth tokens remain valid.
+- **Isolated sessions, logs, and trust.** Tau config, history, diagnostics, and project trust decisions persist per project rather than modifying host state.
 - **Transparent pair-coding.** Because the project directory is a bind mount, your host editor and the sandbox agent see the same files simultaneously.
 
 ## Architecture
@@ -91,7 +93,7 @@ podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
 | Component                 | Description                                                           |
 | ------------------------- | --------------------------------------------------------------------- |
 | `Containerfile`           | Arch Linux image with Python, uv, Node.js, tau, and the entrypoint    |
-| `config/entrypoint.sh`    | Initializes the persistent home and sandbox environment               |
+| `config/entrypoint.sh`    | Seeds host defaults and initializes the persistent sandbox home       |
 | `config/tau-wrapper.py`   | Injects invariant sandbox context and handles mounted credential writes |
 | `config/.bashrc`          | Shell prompt, aliases, and persistent PATH configuration              |
 | `config/APPEND_SYSTEM.md` | Immutable agent environment reference                                 |
@@ -104,7 +106,7 @@ podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
 
 The sandboxed agent knows it is in a microVM — and exactly what it can and cannot do. This is not guessed or inferred; it is explicitly told via system prompt injection.
 
-`run.sh` mounts `config/APPEND_SYSTEM.md` read-only at `/etc/tau-sandbox/APPEND_SYSTEM.md`. The image's `tau` wrapper always prepends `--append-system-prompt` with that path, so project or user prompt files cannot shadow the sandbox reference and host config is never overwritten.
+`run.sh` mounts `config/APPEND_SYSTEM.md` read-only at `/etc/tau-sandbox/APPEND_SYSTEM.md`. The image's `tau` wrapper always prepends `--append-system-prompt` with that path, so project or user prompt files cannot shadow the sandbox reference and host defaults are never overwritten.
 
 Additional explicit `--append-system-prompt` options are combined in command-line order. Because Tau treats any explicit append input as higher precedence, automatic user/project `APPEND_SYSTEM.md` discovery is suppressed; pass another append file explicitly when it is needed. The image also contains a fallback copy for direct image use.
 
@@ -115,7 +117,7 @@ All settings are controlled via environment variables:
 | Variable           | Default             | Description                                                        |
 | ------------------ | ------------------- | ------------------------------------------------------------------ |
 | `TAU_IMAGE`        | `tau-agent-isolated`| Full image reference used by msb; bypasses `.tau-packages` and automatic build/load |
-| `TAU_CONFIG_DIR`   | `~/.tau`            | Host Tau config source; entries are read-only except `credentials.json` |
+| `TAU_CONFIG_DIR`   | `~/.tau`            | Host Tau defaults copied once per project; `credentials.json` remains shared |
 | `TAU_AGENTS_DIR`   | `~/.agents`         | Host `.agents` resources, mounted read-only at `/home/tau/.agents` |
 | `TAU_ENV_FILE`     | `~/.env`            | Env file whose variables are forwarded into the sandbox             |
 | `TAU_CPUS`         | `4`                 | Virtual CPUs for the sandbox                                        |
@@ -147,7 +149,8 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 | Path                                | Source                           | Permissions |
 | ----------------------------------- | -------------------------------- | ----------- |
 | `/workspace`                        | Current directory                | Read-write  |
-| `/home/tau/.tau/*`                  | Existing host `~/.tau` entries   | Read-only   |
+| `/home/tau/.tau/*`                  | Per-project home volume          | Read-write  |
+| `/etc/tau-sandbox/bootstrap/tau/*`  | Existing host `~/.tau` entries   | Read-only   |
 | `/home/tau/.tau/credentials.json`   | Host login tokens, when present  | Read-write  |
 | `/home/tau/.tau/sessions/`          | Per-project sessions volume      | Read-write  |
 | `/home/tau/.tau/logs/`              | Per-project logs volume          | Read-write  |
@@ -159,18 +162,20 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 
 ### Host Config and Isolated State
 
-`run.sh` mounts existing regular top-level host `~/.tau` files and directories read-only at the corresponding sandbox paths, excluding credentials, sessions, logs, trust-store files, and symlinks. This keeps settings, providers, prompts, skills, themes, extensions, and other resources visible without exposing the host config directory to writes. New top-level entries appear on the next sandbox run.
+`run.sh` mounts existing regular top-level host `~/.tau` files and directories individually and read-only under `/etc/tau-sandbox/bootstrap/tau`, excluding credentials, sessions, logs, trust-store files, and symlinks. On the first run for a project, the entrypoint copies those settings, providers, catalogs, prompts, skills, themes, extensions, and other resources into the persistent home. A marker prevents later host changes from overwriting the project's copy. `tau-sandbox --reset` removes the copy, so the next run bootstraps again from the then-current host defaults.
+
+This separate source and destination layout is required for Tau's atomic config writes. Tau writes a sibling temporary file and renames it over files such as `providers.json`; a file bind mount is itself a mount point and Linux rejects replacement with `EBUSY`. The project-local copy is on one writable filesystem, so atomic replacement works and model, provider, scoped-model, and thinking-effort changes persist normally.
 
 `credentials.json` is mounted read-write as a deliberate exception. Tau normally updates credentials by atomically replacing the file, which file mounts cannot support, so the sandbox wrapper uses a bind-mount-safe in-place writer only when shared credentials are mounted. If the host credential file is absent, Tau can create project-local credentials in the persistent home instead.
 
-Host sessions and logs are excluded and replaced by per-project named volumes. Trust-store files live in the per-project home because Tau needs a writable lock and atomic updates, and host trust paths would not match the guest's canonical `/workspace` path. `~/.agents` is mounted read-only. Global settings changes must be made on the host; project-local `.tau` and `.agents` configuration remains writable through `/workspace`.
+Host sessions and logs are excluded and replaced by per-project named volumes. Trust-store files live in the per-project home because Tau needs a writable lock and atomic updates, and host trust paths would not match the guest's canonical `/workspace` path. `~/.agents` remains mounted read-only.
 
 ## Security Model
 
 | Threat                             | Mitigation                                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent reads other projects         | Only the current directory is mounted as `/workspace`                                                                                       |
-| Agent modifies host Tau config     | Existing Tau and `.agents` resources are read-only; only `credentials.json` is writable for login and OAuth refresh                         |
+| Agent modifies host Tau config     | Tau defaults and `.agents` sources are read-only; writable config is project-local, with only `credentials.json` shared for login and OAuth refresh |
 | Agent modifies host history/trust  | Sessions, diagnostic logs, and trust decisions use isolated per-project state                                                                |
 | Agent escapes to host filesystem   | Hardware-isolated microVM; mounts are brokered host-side with path containment and identity virtualization                                  |
 | Agent escalates to root in guest   | Runs as unprivileged `tau` (1000), uses the `restricted` profile, and has no setuid/setgid image binaries                                    |
@@ -196,7 +201,7 @@ pytest tests/
 The test suite covers:
 
 - **Unit tests** — script existence and syntax, Containerfile directives, Makefile targets, config files, run.sh flag generation, package-approval flow
-- **Integration tests** — image build/load, filesystem layout, read-only host resources, credential writes, isolated sessions/logs, persistence, and volume isolation
+- **Integration tests** — image build/load, filesystem layout, one-time host-config bootstrapping, atomic provider writes, credential writes, isolated sessions/logs, persistence, and volume isolation
 - **Security tests** — security flags, mount allowlist, dangerous-character rejection
 
 Integration tests build the image once per session and require `msb` and podman. Tests are automatically skipped when either is not available.

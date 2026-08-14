@@ -209,8 +209,8 @@ def test_run_script_forwards_env_file(tmp_path):
     assert "test-vllm-key" not in result.stderr
 
 
-def test_run_script_mounts_host_config_with_credentials_only_writable(tmp_path):
-    """Host resources are read-only, while credentials remain writable."""
+def test_run_script_mounts_host_config_as_bootstrap_with_shared_credentials(tmp_path):
+    """Host config is a read-only bootstrap source; credentials stay shared."""
     (tmp_path / ".env").write_text("")
     tau_dir = tmp_path / ".tau"
     tau_dir.mkdir()
@@ -226,8 +226,10 @@ def test_run_script_mounts_host_config_with_credentials_only_writable(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert f"-v {tau_dir.resolve()}/skills:/home/tau/.tau/skills:ro" in run_line
-    assert f"-v {tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json:ro" in run_line
+    bootstrap = "/etc/tau-sandbox/bootstrap/tau"
+    assert f"-v {tau_dir.resolve()}/skills:{bootstrap}/skills:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/settings.json:{bootstrap}/settings.json:ro" in run_line
+    assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     assert f"-v {tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json" in run_line
     assert f"{tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json:ro" not in run_line
     assert f"-v {tau_dir.resolve()}/sessions" not in run_line
@@ -239,7 +241,7 @@ def test_run_script_mounts_host_config_with_credentials_only_writable(tmp_path):
 
 
 def test_run_script_skips_missing_host_config_mounts(tmp_path):
-    """Absent host config falls back to volume-local Tau state."""
+    """Absent host config leaves Tau state local to the persistent home."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = next(line for line in msb_log if line.startswith("msb run"))

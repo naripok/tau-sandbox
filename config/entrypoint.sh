@@ -7,9 +7,12 @@ set -euo pipefail
 # Filesystem layout:
 #   /workspace                 project bind mount (rw)
 #   /home/tau                  persistent named volume
-#   /home/tau/.tau/<resources> host ~/.tau entries (ro, when present)
+#   /home/tau/.tau/<resources> writable per-project config, bootstrapped once
+#                               from host ~/.tau entries when present
+#   /etc/tau-sandbox/bootstrap/tau/<resources>
+#                               host bootstrap sources (ro)
 #   /home/tau/.tau/credentials.json
-#                               host credential file (rw exception)
+#                               shared host credential file (rw exception)
 #   /home/tau/.tau/sessions    isolated per-project volume (rw)
 #   /home/tau/.tau/logs        isolated per-project volume (rw)
 #   /home/tau/.tau/trust.json  isolated state in the home volume (rw)
@@ -22,6 +25,25 @@ TAU_HOME=/home/tau
 TAU_DIR="$TAU_HOME/.tau"
 
 mkdir -p "$TAU_HOME/.local/bin" "$TAU_DIR" "$TAU_HOME/.agents"
+
+# Seed host Tau defaults into this project's persistent home exactly once.
+# The host entries are mounted at an alternate read-only path so Tau can later
+# atomically replace its local providers, catalog, settings, and other files.
+BOOTSTRAP_DIR=/etc/tau-sandbox/bootstrap/tau
+BOOTSTRAP_MARKER="$TAU_DIR/.host-config-bootstrapped"
+if [ ! -e "$BOOTSTRAP_MARKER" ]; then
+    shopt -s dotglob nullglob
+    for source in "$BOOTSTRAP_DIR"/*; do
+        name="${source##*/}"
+        destination="$TAU_DIR/$name"
+        if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+            cp -a "$source" "$destination"
+            chmod -R u+w "$destination"
+        fi
+    done
+    shopt -u dotglob nullglob
+    : > "$BOOTSTRAP_MARKER"
+fi
 
 # First-run shell setup. The volume persists, so these run once per project.
 if [ ! -f "$TAU_HOME/.bashrc" ]; then

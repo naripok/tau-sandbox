@@ -1,7 +1,7 @@
 """Unit tests for config/ files: .bashrc, APPEND_SYSTEM.md, entrypoint.sh.
 
 These tests prove the sandbox configuration files exist and describe or
-implement persistent install paths, isolated state, read-only host resources,
+implement persistent install paths, isolated state, host-config bootstrapping,
 and invariant environment-reference injection.
 """
 import os
@@ -100,12 +100,16 @@ def test_entrypoint_has_required_directives():
     assert "set -euo pipefail" in text
     assert 'TAU_DIR="$TAU_HOME/.tau"' in text
     assert "rsync" not in text
+    assert ".host-config-bootstrapped" in text
+    assert "cp -a" in text
+    assert "chmod -R u+w" in text
     assert "TAU_NO_UPDATE_CHECK" in text
     assert 'exec "$@"' in text
 
 
 def test_entrypoint_describes_isolated_config_layout():
     text = _read("entrypoint.sh")
+    assert "/etc/tau-sandbox/bootstrap/tau" in text
     assert "/home/tau/.tau/credentials.json" in text
     assert "/home/tau/.tau/sessions" in text
     assert "/home/tau/.tau/logs" in text

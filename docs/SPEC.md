@@ -46,9 +46,9 @@ The current directory SHALL be mounted read-write at `/workspace` and selected a
 - WHEN the guest reads or modifies it under `/workspace`
 - THEN both host and guest SHALL observe the same file
 
-### Requirement: Read-only host Tau resources
+### Requirement: Host Tau defaults bootstrap writable project config
 
-When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be mounted at `/home/tau/.tau/<name>` read-only, except credentials, sessions, logs, and trust-store files. Top-level symlinks and special files SHALL be ignored so they cannot expand the host-path allowlist:
+When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, and trust-store files. Top-level symlinks and special files SHALL be ignored so they cannot expand the host-path allowlist:
 
 - Host `sessions` and `logs` SHALL NOT be mounted.
 - Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
@@ -56,21 +56,36 @@ When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be 
 - When host `credentials.json` exists, it SHALL be mounted read-write at `/home/tau/.tau/credentials.json`.
 - The host config directory itself SHALL NOT be mounted read-write.
 
-This exposes current settings, providers, skills, prompts, themes, extensions, and other resources without permitting guest modification. A top-level host entry created after startup becomes available on the next run.
+On the first start of a project's persistent home, the entrypoint SHALL copy each mounted bootstrap entry into `/home/tau/.tau/<name>` unless a local entry already exists, then create a persistent bootstrap marker. Later starts SHALL NOT copy bootstrap entries again. This gives Tau writable project-local settings, providers, catalogs, prompts, skills, themes, extensions, and other resources while preserving host defaults. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
 
-#### Scenario: Host resource is visible but immutable
+#### Scenario: Host resource seeds writable project state
 
 - GIVEN host `~/.tau/settings.json` exists
-- WHEN the sandbox starts
-- THEN Tau SHALL read it from `/home/tau/.tau/settings.json`
-- AND a guest write to that path SHALL fail
+- WHEN the project sandbox starts for the first time
+- THEN Tau SHALL read a copied value from `/home/tau/.tau/settings.json`
+- AND a guest write to that project-local path SHALL succeed
+- AND the host file SHALL remain unchanged
+
+#### Scenario: Bootstrap runs only once
+
+- GIVEN a sandbox has bootstrapped and modified its project-local settings
+- WHEN the host defaults change and the same project starts another sandbox
+- THEN the project-local settings SHALL retain their prior value
+- AND resetting the project's volumes SHALL cause the next run to seed the current host defaults
+
+#### Scenario: Atomic provider replacement succeeds
+
+- GIVEN host `providers.json` seeded a project-local copy
+- WHEN Tau writes a sibling temporary file and renames it over `/home/tau/.tau/providers.json`
+- THEN the replacement SHALL succeed without `EBUSY`
+- AND host `providers.json` SHALL remain unchanged
 
 #### Scenario: Host history and trust are not exposed
 
 - GIVEN host sessions, logs, and trust-store files contain data
 - WHEN the sandbox starts
-- THEN sessions and logs SHALL be shadowed by isolated volumes
-- AND trust SHALL use writable state under the per-project home
+- THEN host sessions, logs, and trust-store files SHALL NOT be mounted as bootstrap sources
+- AND sessions, logs, and trust SHALL use writable per-project state
 
 ### Requirement: Writable shared credentials exception
 
