@@ -6,19 +6,19 @@ You are running inside a **hardware-isolated microsandbox microVM** (Arch Linux)
 
 ## Filesystem
 
-| Path                            | Access     | Description |
-| ------------------------------- | ---------- | ----------- |
-| `/workspace`                    | Read-write | Project directory bind-mounted from the host; your working directory. |
-| `/home/tau`                     | Read-write | Per-project persistent named volume for tools and shell state. |
-| `/home/tau/.local/`             | Read-write | Persistent user package installs (`pip --user`, `uv`, `npm -g`). |
-| `/home/tau/.tau/`               | Mixed      | Regular host Tau config entries are mounted read-only at their normal paths. |
-| `/home/tau/.tau/credentials.json` | Read-write when shared | Sole host-config write exception, required for OAuth token refresh. |
-| `/home/tau/.tau/sessions/`      | Read-write | Isolated per-project session volume; host sessions are not mounted. |
-| `/home/tau/.tau/logs/`          | Read-write | Isolated per-project diagnostic-log volume. |
-| `/home/tau/.tau/trust.json`     | Read-write | Isolated project-trust store in the per-project home. |
-| `/home/tau/.agents/`            | Read-only  | Host global skills, prompts, and instructions, when the directory exists. |
-| `/tmp`                          | Read-write | Ephemeral tmpfs, discarded when the VM exits. |
-| `/`                             | Ephemeral  | Disposable writable root overlay, discarded when the VM exits. |
+| Path                              | Access                 | Description                                                                  |
+| --------------------------------- | ---------------------- | ---------------------------------------------------------------------------- |
+| `/workspace`                      | Read-write             | Project directory bind-mounted from the host; your working directory.        |
+| `/home/tau`                       | Read-write             | Per-project persistent named volume for tools and shell state.               |
+| `/home/tau/.local/`               | Read-write             | Persistent user package installs (`pip --user`, `uv`, `npm -g`).             |
+| `/home/tau/.tau/`                 | Mixed                  | Regular host Tau config entries are mounted read-only at their normal paths. |
+| `/home/tau/.tau/credentials.json` | Read-write when shared | Sole host-config write exception, required for OAuth token refresh.          |
+| `/home/tau/.tau/sessions/`        | Read-write             | Isolated per-project session volume; host sessions are not mounted.          |
+| `/home/tau/.tau/logs/`            | Read-write             | Isolated per-project diagnostic-log volume.                                  |
+| `/home/tau/.tau/trust.json`       | Read-write             | Isolated project-trust store in the per-project home.                        |
+| `/home/tau/.agents/`              | Read-only              | Host global skills, prompts, and instructions, when the directory exists.    |
+| `/tmp`                            | Read-write             | Ephemeral tmpfs, discarded when the VM exits.                                |
+| `/`                               | Ephemeral              | Disposable writable root overlay, discarded when the VM exits.               |
 
 **Key rule:** only `/workspace`, `/home/tau`, and the credentials exception can affect persistent host or per-project state. Root-overlay and `/tmp` changes disappear when the VM exits.
 
@@ -36,11 +36,10 @@ You are running inside a **hardware-isolated microsandbox microVM** (Arch Linux)
 
 ## Installed Tools
 
-**Languages:** Python, pip, uv, Node.js, npm
-**System:** bash, git, gcc, make, rsync, fd, ripgrep, ast-grep, openssh, curl, tar
-**Agent:** tau (Tau coding agent)
-
-**Package installs** persist in the home volume: `pip install --user` → `~/.local/`, `uv tool install` → `~/.local/`, and `npm install -g` → `~/.local/`.
+- **Languages:** Python, pip, uv, Node.js, npm
+- **System:** bash, git, gcc, make, rsync, fd, ripgrep, ast-grep, openssh, curl, tar
+- **Agent:** tau (Tau coding agent)
+- **Package installs** persist in the home volume: `pip install --user` → `~/.local/`, `uv tool install` → `~/.local/`, and `npm install -g` → `~/.local/`.
 
 ## Per-Project System Dependencies
 
@@ -81,14 +80,14 @@ Bash is the default shell. `PATH` includes `~/.local/bin`; `PYTHONUSERBASE`, `NP
 
 ## Troubleshooting
 
-| Problem | Solution |
-| ------- | -------- |
-| Command not found | Use `pip install --user`, `uv tool install`, or `npm install -g`. |
-| Cannot install a system package | Add it to `.tau-packages` and ask the user to approve a rebuild. |
-| A rootfs or `/tmp` change vanished | Those filesystems are disposable; persist data in `/workspace` or `/home/tau`. |
-| Cannot change global Tau settings/resources | Host config is read-only; change it on the host or use project-local config. |
-| npm fails on native modules | Opt in with `npm install --ignore-scripts=false`. |
-| Cannot reach a host service on localhost | The microVM has a separate network stack. |
+| Problem                                     | Solution                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------ |
+| Command not found                           | Use `pip install --user`, `uv tool install`, or `npm install -g`.              |
+| Cannot install a system package             | Add it to `.tau-packages` and ask the user to approve a rebuild.               |
+| A rootfs or `/tmp` change vanished          | Those filesystems are disposable; persist data in `/workspace` or `/home/tau`. |
+| Cannot change global Tau settings/resources | Host config is read-only; change it on the host or use project-local config.   |
+| npm fails on native modules                 | Opt in with `npm install --ignore-scripts=false`.                              |
+| Cannot reach a host service on localhost    | The microVM has a separate network stack.                                      |
 
 ## Agent Behavior
 
