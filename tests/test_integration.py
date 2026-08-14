@@ -240,7 +240,7 @@ class TestHostConfigIsolation:
         assert result.returncode == 0, result.stderr
         assert "new-token" in credentials.read_text()
 
-    def test_host_resources_bootstrap_once_and_are_writable(self, tmp_path, sandbox_home):
+    def test_host_resources_refresh_each_start_and_are_writable(self, tmp_path, sandbox_home):
         tau_host = sandbox_home / ".tau-host"
         tau_host.mkdir()
         (tau_host / "skills").mkdir()
@@ -259,7 +259,8 @@ class TestHostConfigIsolation:
                 "test -L /home/tau/.tau/logs && "
                 "test -f /home/tau/.tau/skills/hello.md && "
                 "cat /home/tau/.tau/settings.json && "
-                "printf '{\"sandbox\": true}\\n' > /home/tau/.tau/settings.json",
+                "printf '{\"sandbox\": true}\\n' > /home/tau/.tau/settings.json && "
+                "printf 'local\\n' > /home/tau/.tau/sandbox-only",
             ],
         )
         assert result.returncode == 0, result.stderr
@@ -267,11 +268,22 @@ class TestHostConfigIsolation:
         assert settings.read_text() == '{"host": true}\n'
 
         settings.write_text('{"host": "changed"}\n')
+        (tau_host / "skills" / "hello.md").unlink()
+        (tau_host / "skills" / "new.md").write_text("# new\n")
         result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/settings.json"]
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "cat /home/tau/.tau/settings.json && "
+                "test -f /home/tau/.tau/skills/new.md && "
+                "test ! -e /home/tau/.tau/skills/hello.md && "
+                "test -f /home/tau/.tau/sandbox-only",
+            ],
         )
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"sandbox": true}'
+        assert result.stdout.strip() == '{"host": "changed"}'
         assert settings.read_text() == '{"host": "changed"}\n'
 
     def test_provider_settings_support_atomic_replacement(self, tmp_path, sandbox_home):

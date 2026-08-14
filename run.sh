@@ -7,7 +7,7 @@ set -euo pipefail
 
 # --- Configuration (host side) ---
 # TAU_IMAGE: full image reference passed to msb (bypasses .tau-packages).
-# TAU_CONFIG_DIR: host resources exposed read-only as first-run bootstrap
+# TAU_CONFIG_DIR: host resources exposed read-only for startup synchronization
 # sources, except for the writable credentials file. TAU_AGENTS_DIR remains
 # read-only at its normal sandbox-home path.
 # TAU_ENV_FILE: env file whose variables are forwarded into the VM.
@@ -180,8 +180,8 @@ fi
 # --- Mounts ---
 # The project and per-project home are writable. Existing top-level entries in
 # host ~/.tau are resolved (following symlinks) and mounted individually
-# read-only under the bootstrap directory; the entrypoint copies them into the
-# persistent home once, where Tau can use
+# read-only under the bootstrap directory; the entrypoint refreshes them in the
+# persistent home on every start, where Tau can use
 # atomic replacement without modifying the host defaults. credentials.json is
 # the sole host write exception. Sessions, logs, and trust state stay
 # per-project; the Tau wrapper makes OAuth writes safe for a mounted credential
@@ -198,7 +198,7 @@ if [ -d "$CONFIG_DIR" ]; then
     for entry in "$CONFIG_DIR"/*; do
         name="${entry##*/}"
         case "$name" in
-            credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending)
+            credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending|.host-config-bootstrapped|.host-config-synced)
                 continue
                 ;;
         esac

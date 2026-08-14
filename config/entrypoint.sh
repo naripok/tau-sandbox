@@ -7,8 +7,8 @@ set -euo pipefail
 # Filesystem layout:
 #   /workspace                 project bind mount (rw)
 #   /home/tau                  persistent named volume
-#   /home/tau/.tau/<resources> writable per-project config, bootstrapped once
-#                               from host ~/.tau entries when present
+#   /home/tau/.tau/<resources> writable per-project config, refreshed from
+#                               host ~/.tau entries on every start
 #   /etc/tau-sandbox/bootstrap/tau/<resources>
 #                               host bootstrap sources (ro)
 #   /home/tau/.tau/credentials.json
@@ -106,24 +106,52 @@ elif [ -L "$CREDENTIALS_LINK" ] && [ "$(readlink "$CREDENTIALS_LINK")" = "$SHARE
     fi
 fi
 
-# Seed host Tau defaults into this project's persistent home exactly once.
-# The host entries are mounted at an alternate read-only path so Tau can later
-# atomically replace its local providers, catalog, settings, and other files.
+# Refresh host-managed Tau config on every start. Sources are mounted at an
+# alternate read-only path, then copied into writable project-local paths so
+# Tau can still use atomic replacement during the session. Host config is
+# authoritative at startup; local entries that have never come from the host
+# remain untouched.
 BOOTSTRAP_DIR=/etc/tau-sandbox/bootstrap/tau
-BOOTSTRAP_MARKER="$TAU_DIR/.host-config-bootstrapped"
-if [ ! -e "$BOOTSTRAP_MARKER" ]; then
-    shopt -s dotglob nullglob
-    for source in "$BOOTSTRAP_DIR"/*; do
-        name="${source##*/}"
-        destination="$TAU_DIR/$name"
-        if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
-            cp -a "$source" "$destination"
-            chmod -R u+w "$destination"
+SYNC_MANIFEST="$TAU_DIR/.host-config-synced"
+LEGACY_BOOTSTRAP_MARKER="$TAU_DIR/.host-config-bootstrapped"
+
+# Remove resources that were synchronized previously but have since been
+# removed from the host. Validate manifest names because the sandbox can write
+# this file between starts.
+if [ -f "$SYNC_MANIFEST" ]; then
+    while IFS= read -r old_name; do
+        [ -n "$old_name" ] || continue
+        [ "$old_name" = "${old_name##*/}" ] || continue
+        case "$old_name" in
+            .|..|credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending|.host-config-bootstrapped|.host-config-synced)
+                continue
+                ;;
+        esac
+        if [ ! -e "$BOOTSTRAP_DIR/$old_name" ] && [ ! -L "$BOOTSTRAP_DIR/$old_name" ]; then
+            rm -rf -- "$TAU_DIR/$old_name"
         fi
-    done
-    shopt -u dotglob nullglob
-    : > "$BOOTSTRAP_MARKER"
+    done < "$SYNC_MANIFEST"
 fi
+
+manifest_tmp="$(mktemp "$TAU_DIR/.host-config-synced.XXXXXX")"
+shopt -s dotglob nullglob
+for source in "$BOOTSTRAP_DIR"/*; do
+    name="${source##*/}"
+    case "$name" in
+        credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending|.host-config-bootstrapped|.host-config-synced)
+            continue
+            ;;
+    esac
+    destination="$TAU_DIR/$name"
+    rm -rf -- "$destination"
+    cp -a "$source" "$destination"
+    chmod -R u+w "$destination"
+    printf '%s\n' "$name" >> "$manifest_tmp"
+done
+shopt -u dotglob nullglob
+rm -rf -- "$SYNC_MANIFEST"
+mv "$manifest_tmp" "$SYNC_MANIFEST"
+rm -rf -- "$LEGACY_BOOTSTRAP_MARKER"
 
 # First-run shell setup. The volume persists, so these run once per project.
 if [ ! -f "$TAU_HOME/.bashrc" ]; then

@@ -46,7 +46,7 @@ The current directory SHALL be mounted read-write at `/workspace` and selected a
 - WHEN the guest reads or modifies it under `/workspace`
 - THEN both host and guest SHALL observe the same file
 
-### Requirement: Host Tau defaults bootstrap writable project config
+### Requirement: Host Tau config synchronizes into writable project config
 
 When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, and trust-store files. Top-level symlinks SHALL be resolved on the host and their regular file or directory targets mounted under the symlink's name, allowing linked skills, extensions, and other config to bootstrap. Dangling symlinks and special files SHALL be ignored:
 
@@ -58,7 +58,7 @@ When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be 
 
 Microsandbox SHALL NOT receive nested mount targets under `/home/tau/.tau`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable Tau directory first and link the external credential, session, and log backing paths into it. A root-owned Tau directory left by the earlier nested-mount layout SHALL be moved aside automatically. Non-empty real session or log directories from that layout SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
 
-On the first start of a project's persistent home, the entrypoint SHALL copy each mounted bootstrap entry into `/home/tau/.tau/<name>` unless a local entry already exists, then create a persistent bootstrap marker. Later starts SHALL NOT copy bootstrap entries again. This gives Tau writable project-local settings, providers, catalogs, prompts, skills, themes, extensions, and other resources while preserving host defaults. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
+On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<name>` with a writable copy of its mounted source. It SHALL track synchronized top-level names and remove a previously synchronized resource when that resource is removed from the host. Project-local entries that were never synchronized from the host SHALL remain persistent. This makes host settings, providers, catalogs, prompts, skills, themes, extensions, and other resources authoritative at startup while preserving host files. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
 
 #### Scenario: Fresh Tau home remains writable
 
@@ -82,12 +82,14 @@ On the first start of a project's persistent home, the entrypoint SHALL copy eac
 - AND a guest write to that project-local path SHALL succeed
 - AND the host file SHALL remain unchanged
 
-#### Scenario: Bootstrap runs only once
+#### Scenario: Host changes synchronize on restart
 
-- GIVEN a sandbox has bootstrapped and modified its project-local settings
-- WHEN the host defaults change and the same project starts another sandbox
-- THEN the project-local settings SHALL retain their prior value
-- AND resetting the project's volumes SHALL cause the next run to seed the current host defaults
+- GIVEN a sandbox has synchronized and modified its writable project-local copy
+- WHEN the host config changes and the same project starts another sandbox
+- THEN the project-local copy SHALL contain the current host value
+- AND newly added host skills and extensions SHALL be available
+- AND a previously synchronized resource removed from the host SHALL be removed locally
+- AND an entry created only inside the sandbox SHALL remain persistent
 
 #### Scenario: Atomic provider replacement succeeds
 

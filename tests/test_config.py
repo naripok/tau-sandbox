@@ -106,9 +106,11 @@ def test_entrypoint_has_required_directives():
     assert "set -euo pipefail" in text
     assert 'TAU_DIR="$TAU_HOME/.tau"' in text
     assert "rsync" not in text
-    assert ".host-config-bootstrapped" in text
+    assert ".host-config-synced" in text
+    assert "LEGACY_BOOTSTRAP_MARKER" in text
     assert "cp -a" in text
     assert "chmod -R u+w" in text
+    assert 'rm -rf -- "$destination"' in text
     assert ".tau.msb-root-owned" in text
     assert "link_volume_dir /var/lib/tau-sandbox/sessions" in text
     assert "link_volume_dir /var/lib/tau-sandbox/logs" in text
