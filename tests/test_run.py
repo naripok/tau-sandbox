@@ -203,25 +203,27 @@ def test_run_script_forwards_env_file(tmp_path):
     assert "test-vllm-key" not in result.stderr
 
 
-def test_run_script_mounts_host_config_readonly(tmp_path):
-    """Existing ~/.tau and ~/.agents dirs are mounted read-only."""
+def test_run_script_mounts_host_config_into_sandbox_home(tmp_path):
+    """Existing ~/.tau and ~/.agents dirs are mounted read-write into the
+    sandbox home so the agent reads/writes the host's login config."""
     (tmp_path / ".env").write_text("")
     (tmp_path / ".tau").mkdir()
     (tmp_path / ".agents").mkdir()
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert f"-v {tmp_path.resolve()}/.tau:/tau-source:ro" in run_line
-    assert f"-v {tmp_path.resolve()}/.agents:/agents-source:ro" in run_line
+    assert f"-v {tmp_path.resolve()}/.tau:/home/tau/.tau" in run_line
+    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents" in run_line
 
 
 def test_run_script_skips_missing_config_mounts(tmp_path):
-    """No /tau-source or /agents-source mounts when host config is absent."""
+    """No shared config mounts (fall back to volume-local config) when
+    host ~/.tau or ~/.agents are absent."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "/tau-source" not in run_line
-    assert "/agents-source" not in run_line
+    assert "/home/tau/.tau" not in run_line
+    assert "/home/tau/.agents" not in run_line
 
 
 def test_run_script_resources_are_overridable(tmp_path):

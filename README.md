@@ -2,7 +2,7 @@
 
 Per-project isolation for the [Tau coding agent](https://github.com/huggingface/tau) using [microsandbox](https://github.com/superradcompany/microsandbox) microVMs.
 
-Each project runs in its own hardware-isolated microVM with a persistent volume. Sessions, installed tools, and shell customizations survive across runs. Projects remain isolated from each other and from the host.
+Each project runs in its own hardware-isolated microVM with a persistent volume. Installed tools and shell customizations survive across runs, and sessions live in the shared `~/.tau`, identical inside the sandbox and on the host. Projects remain isolated from each other and from the host — except for the deliberately shared Tau config.
 
 ## The Problem
 
@@ -67,19 +67,19 @@ Projects without `.tau-packages` use the shared base image — zero overhead.
 ```
 Host                              Sandbox (microVM)
 ─────────────────                 ─────────────────
-~/Projects/my-project/   ───────► /workspace        (read-write virtiofs mount)
-~/.tau/                  ───────► /tau-source       (read-only)
-~/.agents/               ───────► /agents-source    (read-only, optional)
-                          ───────► /home/tau        (persistent named volume)
+~/Projects/my-project/   ───────► /workspace            (read-write virtiofs mount)
+~/.tau/                  ───────► /home/tau/.tau        (shared, read-write)
+~/.agents/               ───────► /home/tau/.agents     (shared, read-write, optional)
+                          ───────► /home/tau            (persistent named volume)
 
 podman volume (source of image) → msb run → boot microVM → entrypoint → tau
 ```
 
-- **One project, one sandbox, one volume.** Each project gets its own persistent named volume `tau-persist-<project>-<hash>`.
+- **One project, one sandbox, one volume.** Each project gets its own persistent named volume `tau-persist-<project>-<hash>` for tools and shell state.
 - **Ephemeral microVM.** The VM boots fresh from the image on every run and is discarded afterwards. Everything durable lives in `/workspace` (bind mount) and `/home/tau` (volume).
 - **Hardware isolation.** The guest has its own kernel; the host is reachable only through the explicit mounts, all enforced host-side.
-- **Read-only host config.** The agent can use global Tau skills and settings but cannot modify them. Host config is rsynced into the volume on every start.
-- **Persistent state.** Sessions (`~/.tau/sessions`), tool installs (`~/.local`), and shell customizations survive across runs.
+- **Shared host config.** Host `~/.tau` and `~/.agents` are mounted into the sandbox home (`/home/tau/.tau`, `/home/tau/.agents`) as read-write, identity-virtualized bind mounts. The sandboxed Tau reads and writes the same login tokens (`credentials.json`), skills, prompts, themes, sessions, and logs as the host — which is what lets it call models with the host's login.
+- **Persistent state.** Tool installs (`~/.local`) and shell customizations survive across runs; sessions and logs live in the shared `~/.tau`, so they are identical inside the sandbox and on the host.
 - **Transparent pair-coding.** Because the project directory is a bind mount, your host editor and the sandbox agent see the same files simultaneously — no sync step.
 
 ## Architecture
@@ -99,7 +99,7 @@ podman volume (source of image) → msb run → boot microVM → entrypoint → 
 
 The sandboxed agent knows it is in a microVM — and exactly what it can and cannot do. This is not guessed or inferred; it is explicitly told via system prompt injection.
 
-The entrypoint copies `config/APPEND_SYSTEM.md` into the volume's `~/.tau/APPEND_SYSTEM.md` on every start, and Tau automatically injects that file into the system prompt. Every agent session receives a complete description of the sandbox: filesystem layout, installed tools, security model, network, resource limits, persistence behavior, and troubleshooting tips.
+The entrypoint copies `config/APPEND_SYSTEM.md` into `~/.tau/APPEND_SYSTEM.md` (in the shared host config) on every start, and Tau automatically injects that file into the system prompt. Every agent session receives a complete description of the sandbox: filesystem layout, installed tools, security model, network, resource limits, persistence behavior, and troubleshooting tips.
 
 The file is committed in the repository (and baked into the image at `/etc/tau-sandbox/APPEND_SYSTEM.md`), and overwritten on every start, so it stays in sync with the actual sandbox configuration. When the Containerfile adds a new tool or `run.sh` changes a flag, `APPEND_SYSTEM.md` is updated to match.
 
@@ -110,8 +110,8 @@ All settings are controlled via environment variables:
 | Variable           | Default             | Description                                                        |
 | ------------------ | ------------------- | ------------------------------------------------------------------ |
 | `TAU_IMAGE`        | `tau-agent-isolated`| Full image reference used by msb; bypasses `.tau-packages` and automatic build/load |
-| `TAU_CONFIG_DIR`   | `~/.tau`            | Host Tau config, mounted read-only at `/tau-source`                 |
-| `TAU_AGENTS_DIR`   | `~/.agents`         | Host `.agents` config, mounted read-only at `/agents-source`        |
+| `TAU_CONFIG_DIR`   | `~/.tau`            | Host Tau config, mounted read-write at `/home/tau/.tau` (shared tokens, skills, sessions) |
+| `TAU_AGENTS_DIR`   | `~/.agents`         | Host `.agents` config, mounted read-write at `/home/tau/.agents`    |
 | `TAU_ENV_FILE`     | `~/.env`            | Env file whose variables are forwarded into the sandbox             |
 | `TAU_CPUS`         | `4`                 | Virtual CPUs for the sandbox                                        |
 | `TAU_MEM`          | `8G`                | Memory for the sandbox                                              |
@@ -138,34 +138,29 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 
 ### Sandbox Filesystem
 
-| Path                                | Source                      | Permissions |
-| ----------------------------------- | --------------------------- | ----------- |
-| `/workspace`                        | Current directory           | Read-write  |
-| `/tau-source`                       | `~/.tau/` (if it exists)    | Read-only   |
-| `/agents-source`                    | `~/.agents/` (if it exists) | Read-only   |
-| `/home/tau`                         | Persistent named volume     | Read-write  |
-| `/home/tau/.tau/`                   | Synced from `/tau-source/`  | Read-write  |
-| `/home/tau/.tau/sessions/`          | Session history             | Read-write  |
-| `/home/tau/.local/`                 | User-level package installs | Read-write  |
+| Path                                | Source                           | Permissions |
+| ----------------------------------- | -------------------------------- | ----------- |
+| `/workspace`                        | Current directory                | Read-write  |
+| `/home/tau/.tau/`                   | `~/.tau/` — shared (if present)  | Read-write  |
+| `/home/tau/.agents/`                | `~/.agents/` — shared (if present)| Read-write  |
+| `/home/tau`                         | Persistent named volume          | Read-write  |
+| `/home/tau/.local/`                 | User-level package installs      | Read-write  |
+| `~/.tau/credentials.json` in-guest  | Host login tokens, same file     | Read-write  |
 
-### Config Sync
+### Shared Config
 
-On every sandbox start, the entrypoint syncs host config into the persistent volume:
+Host `~/.tau` and `~/.agents` are mounted into the sandbox home at `/home/tau/.tau` and `/home/tau/.agents` — there is no copy or sync step. Both sides of the mount see the same files, and writes (Tau login/refresh, sessions, logs, trust decisions) land on the host immediately, exactly as if Tau ran there directly.
 
-| Synced from host                     | Preserved in volume          |
-| ------------------------------------ | ---------------------------- |
-| New skills in `~/.tau/skills/`       | Sessions in `sessions/`      |
-| New/changed `catalog.toml`           | Logs in `logs/`              |
-| Updated prompts/themes               | `credentials.json`, `trust.json`, lock files |
+This replaces the old read-only `/tau-source` + rsync design: the sandboxed agent was previously cut off from `credentials.json`, so it had no login and could not call models.
 
-Files deleted from the host are **not** removed from the volume (to avoid accidentally deleting user data). Use `./run.sh --reset` for a clean slate.
+The only per-start write into the shared config is `APPEND_SYSTEM.md`, refreshed from the repository or image so the agent's environment reference stays accurate. Use `./run.sh --reset` to wipe a project's persistent volume (`/home/tau`), which no longer holds Tau config — only tools, shell state, and any config dirs absent from the host.
 
 ## Security Model
 
 | Threat                             | Mitigation                                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent reads other projects         | Only the current directory is mounted as `/workspace`                                                                                       |
-| Agent modifies host config         | Mounted `:ro` at `/tau-source` / `/agents-source` — enforced host-side, writable copies go to the volume only                                |
+| Agent modifies host Tau config     | **Shared by design:** `~/.tau` / `~/.agents` are mounted read-write into the sandbox. The agent can update login tokens, sessions, and trust decisions exactly as if it ran Tau on the host — required so the sandboxed Tau can call models. Every host path inside is still brokered host-side via identity virtualization |
 | Agent escapes to host filesystem   | Hardware-isolated microVM (own kernel). Bind mounts are brokered host-side with path containment and identity virtualization                  |
 | Agent escalates to root in guest   | Runs as unprivileged user `tau` (1000) with the `restricted` security profile (`no_new_privs`, capability drops)                             |
 | Network exfiltration               | Outbound + gateway DNS allowed via the `public` network profile; inbound denied (no published ports)                                                  |
@@ -178,7 +173,7 @@ Files deleted from the host are **not** removed from the volume (to avoid accide
 ./run.sh --reset
 ```
 
-This removes the project's persistent volume. **All persistent data is destroyed**: sessions, installed tools, custom `.bashrc` edits, and any other state. The next run re-initializes from current host config.
+This removes the project's persistent volume: installed tools, custom `.bashrc` edits, and any other per-project state. The shared `~/.tau` and `~/.agents` config is untouched — it belongs to the host, not the sandbox.
 
 ## Testing
 
@@ -189,8 +184,8 @@ pytest tests/
 The test suite covers:
 
 - **Unit tests** — script existence and syntax, Containerfile directives, Makefile targets, config files, run.sh flag generation, package-approval flow
-- **Integration tests** — image build/load, filesystem layout, mount correctness, config sync, persistence across runs, volume isolation
-- **Security tests** — security flags, read-only config mounts, dangerous-character rejection
+- **Integration tests** — image build/load, filesystem layout, mount correctness, shared config, persistence across runs, volume isolation
+- **Security tests** — security flags, mount allowlist, dangerous-character rejection
 
 Integration tests build the image once per session and require `msb` and podman. Tests are automatically skipped when either is not available.
 

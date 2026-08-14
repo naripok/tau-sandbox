@@ -1,10 +1,11 @@
 """Security-focused unit tests for run.sh and config files.
 
 These prove at the configuration level (no KVM required) that the sandbox
-exposes only the declared host paths, enforces read-only config mounts,
-never leaks environment variables, and rejects dangerous package
-declarations. Runtime enforcement (host-side mount read-only, hardware
-isolation) is microsandbox's contract, covered by integration tests.
+exposes only the declared host paths, mounts shared host config only at the
+sandbox home config paths, never leaks environment variables, and rejects
+dangerous package declarations. Runtime enforcement (mount containment,
+identity virtualization, hardware isolation) is microsandbox's contract,
+covered by integration tests.
 """
 import os
 import pathlib
@@ -21,8 +22,8 @@ def _run_line(msb_log):
 
 def test_only_expected_dirs_are_mounted(tmp_path):
     """The mount allowlist is exactly: workspace, persistent home volume,
-    and (if they exist) the two read-only host config dirs. No other host
-    paths may ride into the VM."""
+    and (if they exist) the two shared host config dirs mounted into the
+    sandbox home. No other host paths may ride into the VM."""
     (tmp_path / ".env").write_text("")
     (tmp_path / ".tau").mkdir()
     (tmp_path / ".agents").mkdir()
@@ -30,24 +31,26 @@ def test_only_expected_dirs_are_mounted(tmp_path):
     assert result.returncode == 0
     run_line = _run_line(msb_log)
     # Mount pairs (each -v flag is followed by SOURCE:DEST): workspace,
-    # persistent home volume, and the two read-only host config dirs.
+    # persistent home volume, and the two shared host config dirs.
     assert run_line.count(" -v ") == 4
     assert f"-v {tmp_path.resolve()}:/workspace" in run_line
     assert f"tau-persist-{tmp_path.name}-" in run_line and ":/home/tau" in run_line
-    assert f"-v {tmp_path.resolve()}/.tau:/tau-source:ro" in run_line
-    assert f"-v {tmp_path.resolve()}/.agents:/agents-source:ro" in run_line
+    assert f"-v {tmp_path.resolve()}/.tau:/home/tau/.tau" in run_line
+    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents" in run_line
 
 
-def test_host_config_mounts_are_always_readonly(tmp_path):
-    """Host config mounts must carry the :ro option; a typo here would let
-    the guest rewrite the user's real ~/.tau."""
+def test_host_config_mounts_target_sandbox_home_paths(tmp_path):
+    """Shared config mounts must resolve to exactly the sandbox home
+    config paths, never a stray host path, and carry no :ro (the sandboxed
+    Tau refreshes login tokens in place)."""
     (tmp_path / ".env").write_text("")
     (tmp_path / ".tau").mkdir()
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = _run_line(msb_log)
-    assert ":/tau-source:ro" in run_line
+    assert "-v " + str(tmp_path.resolve() / ".tau") + ":/home/tau/.tau" in run_line
+    assert ":ro" not in run_line
     # ~/.agents does not exist here, so no agents mount may be added.
-    assert "agents-source" not in run_line
+    assert "/home/tau/.agents" not in run_line
 
 
 def test_security_profile_and_identity_flags(tmp_path):

@@ -54,35 +54,33 @@ The current working directory SHALL be mounted read-write at `/workspace` and se
 - WHEN the run exits
 - THEN `generated.txt` SHALL exist in the host directory
 
-### Requirement: Read-only host config mounts
+### Requirement: Shared host config mounts
 
-When the host `~/.tau` directory exists, it SHALL be mounted read-only at `/tau-source`. When the host `~/.agents` directory exists, it SHALL be mounted read-only at `/agents-source`. Writes to either mount SHALL fail even from a root process inside the guest (enforced host-side).
+When the host `~/.tau` directory exists, it SHALL be mounted read-write at the sandbox home config path `/home/tau/.tau`. When the host `~/.agents` directory exists, it SHALL be mounted read-write at `/home/tau/.agents`. The mounts SHALL be identity-virtualized so guest writes land on the host under the host user's identity, exactly like the workspace mount.
 
-#### Scenario: Config mount is read-only
+This is what gives the sandboxed Tau the host's login: `~/.tau/credentials.json` (API keys and refreshable OAuth tokens) is the same file inside and outside the sandbox, and Tau refreshes it in place during sessions.
 
-- GIVEN a host `~/.tau` containing a skills directory
-- WHEN a sandbox run attempts `echo x > /tau-source/skills/evil.md`
-- THEN the write SHALL fail
+#### Scenario: Host login tokens are available to the agent
 
-### Requirement: Config sync into the volume
-
-On every start, the entrypoint SHALL rsync host config from `/tau-source` into the volume's `~/.tau/` and from `/agents-source` into the volume's `~/.agents/`, excluding sessions, logs, credentials, trust data, and lock files.
-
-#### Scenario: New host skill appears in the volume
-
-- GIVEN a host `~/.tau/skills/new-skill.md` not present in the volume
+- GIVEN a host `~/.tau/credentials.json` containing a token
 - WHEN the sandbox starts
-- THEN `~/.tau/skills/new-skill.md` SHALL exist in the volume
+- THEN `cat /home/tau/.tau/credentials.json` in the guest SHALL print the token
 
-#### Scenario: Host sessions are never copied
+#### Scenario: New host config is immediately visible
 
-- GIVEN a host `~/.tau/sessions/host-only.jsonl`
+- GIVEN a host `~/.tau/skills/new-skill.md`
 - WHEN the sandbox starts
-- THEN the file SHALL NOT exist in the volume
+- THEN `/home/tau/.tau/skills/new-skill.md` SHALL exist in the guest on the same run
+
+#### Scenario: Guest writes reach the host config
+
+- GIVEN a running sandbox launched from a host with an existing `~/.tau`
+- WHEN the guest writes `hello.md` to `/home/tau/.tau`
+- THEN `~/.tau/hello.md` SHALL exist on the host when the run exits
 
 ### Requirement: Environment reference injection
 
-The entrypoint SHALL place an `APPEND_SYSTEM.md` in the volume's `~/.tau/` on every start, preferring `/workspace/config/APPEND_SYSTEM.md` (repo checkout) and falling back to the image copy at `/etc/tau-sandbox/APPEND_SYSTEM.md`. Tau auto-injects this file into the system prompt.
+The entrypoint SHALL place an `APPEND_SYSTEM.md` in `~/.tau/` on every start, preferring `/workspace/config/APPEND_SYSTEM.md` (repo checkout) and falling back to the image copy at `/etc/tau-sandbox/APPEND_SYSTEM.md`. When run.sh mounted the host's `~/.tau` at `/home/tau/.tau`, the file is refreshed in the shared config. Tau auto-injects this file into the system prompt.
 
 #### Scenario: Workspace copy wins
 

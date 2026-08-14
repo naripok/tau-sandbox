@@ -5,38 +5,31 @@ set -euo pipefail
 # inside a hardware-isolated microsandbox microVM.
 #
 # Filesystem layout:
-#   /workspace      project bind mount (rw)
-#   /home/tau       persistent named volume
-#   /tau-source     host ~/.tau     (read-only; may be absent)
-#   /agents-source  host ~/.agents  (read-only; may be absent)
+#   /workspace          project bind mount (rw)
+#   /home/tau           persistent named volume
+#   /home/tau/.tau      host ~/.tau      (shared read-write; may be absent)
+#   /home/tau/.agents   host ~/.agents   (shared read-write; may be absent)
+#
+# run.sh mounts the host config dirs into the sandbox home, so the agent
+# reads and writes the same Tau config as the host: login tokens
+# (credentials.json), skills, prompts, themes, sessions, and logs. Writes
+# reach the host through microsandbox identity virtualization.
 #
 # The microVM rootfs is ephemeral — it is discarded after every run.
-# Everything that must survive lives under /home/tau.
+# Everything that must survive lives under /home/tau or in the shared
+# config mounts.
 
 TAU_HOME=/home/tau
 TAU_DIR="$TAU_HOME/.tau"
 
 mkdir -p "$TAU_HOME/.local/bin" "$TAU_DIR" "$TAU_HOME/.agents"
 
-# Sync host config into the persistent volume on every start.
-# Host wins for config files; guest modifications stay in the volume.
-# Sessions, logs, credentials, and lock files are never copied from the host.
-if [ -d /tau-source ]; then
-    rsync -rltDp --no-o --no-g \
-        --exclude='/sessions/' --exclude='/logs/' \
-        --exclude='credentials.json' --exclude='trust.json' \
-        --exclude='auth.json' --exclude='*.lock' \
-        /tau-source/. "$TAU_DIR/" || true
-fi
-if [ -d /agents-source ]; then
-    rsync -rltDp --no-o --no-g \
-        --exclude='*.lock' \
-        /agents-source/. "$TAU_HOME/.agents/" || true
-fi
-
 # Appended system prompt describing this sandbox. Refreshed every start so
 # it stays in sync with the repo (when /workspace is the tau-sandbox checkout)
 # and with the image copy baked into /etc/tau-sandbox.
+#
+# The target is the agent's config dir (~/.tau), which is the host's own
+# ~/.tau when run.sh mounted it there.
 if [ -f /workspace/config/APPEND_SYSTEM.md ]; then
     cp /workspace/config/APPEND_SYSTEM.md "$TAU_DIR/APPEND_SYSTEM.md"
 elif [ -f /etc/tau-sandbox/APPEND_SYSTEM.md ]; then

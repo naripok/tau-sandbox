@@ -2,8 +2,8 @@
 
 These tests prove the sandbox configuration files exist, are valid bash,
 and describe/implement the behaviors the sandbox promises: persistent
-user-level install paths, environment reference injection, and host
-config syncing into the persistent volume.
+user-level install paths, environment reference injection, and the shared
+host config mounted into the sandbox home.
 """
 import os
 import pathlib
@@ -54,7 +54,7 @@ def test_append_system_doc_exists():
 
 def test_append_system_doc_describes_filesystem():
     text = _read("APPEND_SYSTEM.md")
-    for path in ("/workspace", "/home/tau", "/tau-source", "/agents-source"):
+    for path in ("/workspace", "/home/tau", "/home/tau/.tau", "/home/tau/.agents"):
         assert path in text
 
 
@@ -91,16 +91,21 @@ def test_entrypoint_exists_and_executable():
 def test_entrypoint_has_required_directives():
     text = _read("entrypoint.sh")
     assert "set -euo pipefail" in text
-    assert "rsync" in text
+    # Config is shared via mounts, not rsync: the entrypoint must address
+    # the sandbox home config path and must not resurrect the old sync.
+    assert 'TAU_DIR="$TAU_HOME/.tau"' in text
+    assert "rsync" not in text
     assert "TAU_NO_UPDATE_CHECK" in text
     assert 'exec "$@"' in text
 
 
-def test_entrypoint_syncs_host_config_into_volume():
+def test_entrypoint_describes_shared_config_layout():
+    # run.sh mounts host config into the sandbox home; the entrypoint must
+    # document that layout and not re-introduce a /tau-source rsync path.
     text = _read("entrypoint.sh")
-    assert "/tau-source/" in text
-    assert "/agents-source/" in text
-    assert "--exclude='/sessions/'" in text or "--exclude='sessions/'" in text
+    assert "/home/tau/.tau" in text
+    assert "/home/tau/.agents" in text
+    assert "/tau-source" not in text
 
 
 def test_entrypoint_refreshes_append_system():

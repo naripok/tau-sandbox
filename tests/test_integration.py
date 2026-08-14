@@ -2,9 +2,9 @@
 
 These tests exercise the full launch path (run.sh -> msb run -> boot ->
 entrypoint -> command) and prove the sandbox contract: workspace bind
-mount, persistent volume, ephemeral rootfs, host config sync, read-only
-config mounts, unprivileged execution, env forwarding, and volume
-isolation between projects.
+mount, persistent volume, ephemeral rootfs, shared host config mounts at
+/home/tau/.tau and /home/tau/.agents, unprivileged execution, env
+forwarding, and volume isolation between projects.
 
 The test image is built and loaded once per session by the loaded_image
 fixture. Tests are skipped when msb or podman is unavailable.
@@ -167,37 +167,49 @@ class TestPersistence:
 
 @pytest.mark.usefixtures("loaded_image", "volume_cleanup")
 class TestHostConfigSync:
-    """Read-only host config mounts and volume syncing."""
+    """Shared host config mounts at the sandbox home config paths."""
 
-    def test_config_mount_is_readonly(self, tmp_path, sandbox_home):
-        """Writes to /tau-source must fail (host-side enforced)."""
+    def test_login_tokens_are_available_to_the_agent(self, tmp_path, sandbox_home):
+        """Tau's login token file (~/.tau/credentials.json) on the host is
+        the same file inside the sandbox, so the sandboxed agent can use the
+        host's login to call models. This is the regression the shared mount
+        fixes: the old rsync path excluded credentials entirely."""
         (sandbox_home / ".tau-host").mkdir()
-        (sandbox_home / ".tau-host" / "skills").mkdir()
-        (sandbox_home / ".tau-host" / "skills" / "first.md").write_text("# first\n")
-        result = run_sandbox(
-            tmp_path, sandbox_home, ["sh", "-c", "echo nope > /tau-source/blocked.txt"]
+        (sandbox_home / ".tau-host" / "credentials.json").write_text(
+            '{"openrouter": "sk-fake-token"}\n'
         )
-        assert result.returncode != 0
-        # The host file must not have changed either.
-        assert not (sandbox_home / ".tau-host" / "blocked.txt").exists()
+        result = run_sandbox(
+            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/credentials.json"]
+        )
+        assert result.returncode == 0
+        assert "sk-fake-token" in result.stdout
 
-    def test_host_skills_are_synced_into_volume(self, tmp_path, sandbox_home):
-        """New host skills appear in the volume's ~/.tau on the start after
-        they are added, and are readable from the guest."""
+    def test_host_config_is_visible_immediately(self, tmp_path, sandbox_home):
+        """Host skills are visible in the sandbox home on the same run —
+        the mount replaces the one-boot-later rsync propagation."""
         (sandbox_home / ".tau-host").mkdir()
         (sandbox_home / ".tau-host" / "skills").mkdir()
-        # First boot: syncs host config into the empty volume.
-        result = run_sandbox(tmp_path, sandbox_home, ["true"])
-        assert result.returncode == 0
-
         (sandbox_home / ".tau-host" / "skills" / "hello.md").write_text("# hello\n")
         result = run_sandbox(tmp_path, sandbox_home, ["ls", "/home/tau/.tau/skills/"])
         assert result.returncode == 0
         assert "hello.md" in result.stdout
 
+    def test_guest_writes_reach_host_config(self, tmp_path, sandbox_home):
+        """Writes to the shared /home/tau/.tau land on the host's ~/.tau via
+        identity virtualization (Tau token refresh must persist host-side)."""
+        (sandbox_home / ".tau-host").mkdir()
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            ["sh", "-c", "echo refreshed > /home/tau/.tau/refresh-marker.txt"],
+        )
+        assert result.returncode == 0
+        assert (sandbox_home / ".tau-host" / "refresh-marker.txt").read_text().strip() == "refreshed"
+
     def test_append_system_doc_is_refreshed(self, tmp_path, sandbox_home):
-        """APPEND_SYSTEM.md lands in the volume's ~/.tau for Tau to inject;
-        the repo copy (when /workspace is the checkout) takes precedence."""
+        """APPEND_SYSTEM.md lands in the agent's ~/.tau (the shared host
+        config when mounted) for Tau to inject; the repo copy (when
+        /workspace is the checkout) takes precedence."""
         (tmp_path / "config").mkdir()
         (tmp_path / "config" / "APPEND_SYSTEM.md").write_text(
             "REPO_COPY_MARKER_42\n"

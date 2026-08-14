@@ -7,7 +7,8 @@ set -euo pipefail
 
 # --- Configuration (host side) ---
 # TAU_IMAGE: full image reference passed to msb (bypasses .tau-packages).
-# TAU_CONFIG_DIR/TAU_AGENTS_DIR: host config mounted read-only into the VM.
+# TAU_CONFIG_DIR/TAU_AGENTS_DIR: host config mounted into the sandbox home
+# so the agent reads and writes the same config as the host.
 # TAU_ENV_FILE: env file whose variables are forwarded into the VM.
 IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
 CONFIG_DIR="${TAU_CONFIG_DIR:-${HOME}/.tau}"
@@ -171,14 +172,17 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # --- Mounts ---
-# Workspace + persistent home are always mounted; host config mounts are
+# Workspace + persistent home are always mounted. The host's Tau config
+# dirs are mounted read-write into the sandbox home (nested inside the
+# volume mount) so the agent picks up the host's login tokens, skills, and
+# sessions; writes reach the host via identity virtualization. Mounts are
 # added only when the source directory exists.
 MOUNT_ARGS=(
     -v "$(pwd):/workspace"
     -v "$PERSIST_VOLUME:/home/tau"
 )
-[ -d "$CONFIG_DIR" ] && MOUNT_ARGS+=(-v "$CONFIG_DIR:/tau-source:ro")
-[ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/agents-source:ro")
+[ -d "$CONFIG_DIR" ] && MOUNT_ARGS+=(-v "$CONFIG_DIR:/home/tau/.tau")
+[ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents")
 
 # --- Run ---
 # Public network profile: msb auto-allows egress and gateway DNS, and keeps

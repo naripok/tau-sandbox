@@ -6,26 +6,25 @@ You are running inside a **hardware-isolated microsandbox microVM** (Arch Linux)
 
 ## Filesystem
 
-| Path                | Access     | Description                                                     |
-| ------------------- | ---------- | --------------------------------------------------------------- |
-| `/workspace`        | Read-write | Project directory (bind-mounted from host). Your working dir.   |
-| `/home/tau`         | Read-write | Persistent named volume — survives across runs. Tools, sessions. |
-| `/home/tau/.local/` | Read-write | User-level package installs (`pip --user`, `uv`, `npm -g`).     |
-| `/tau-source`       | Read-only  | Host's `~/.tau/` — global skills, prompts, themes (if mounted). |
-| `/agents-source`    | Read-only  | Host's `~/.agents/` — global skills, prompts (if mounted).      |
-| `/` (rootfs)        | Ephemeral  | Fresh from the image on every run. **Discarded when the run ends.** |
+| Path                  | Access     | Description                                                     |
+| --------------------- | ---------- | --------------------------------------------------------------- |
+| `/workspace`          | Read-write | Project directory (bind-mounted from host). Your working dir.   |
+| `/home/tau`           | Read-write | Persistent named volume — survives across runs. Tools, shell.   |
+| `/home/tau/.local/`   | Read-write | User-level package installs (`pip --user`, `uv`, `npm -g`).     |
+| `/home/tau/.tau`      | Read-write | Host's `~/.tau/` — shared config: login tokens, skills, prompts, themes, sessions, logs (mounted when present). |
+| `/home/tau/.agents`   | Read-write | Host's `~/.agents/` — shared global skills and prompts (mounted when present). |
+| `/` (rootfs)          | Ephemeral  | Fresh from the image on every run. **Discarded when the run ends.** |
 
 **Key rule:** the microVM root filesystem does **not** persist. Anything installed or changed outside `/workspace` and `/home/tau` is lost when the sandbox exits. System-package installs (`pacman`) are not available anyway — you run without root.
 
-**Not accessible:** other project directories, the host home directory, host SSH keys, host dotfiles, host sockets, and any host filesystem outside the mounts above.
+**Not accessible:** other project directories, the rest of the host home (except the shared `~/.tau` and `~/.agents` mounts above), host SSH keys, host dotfiles, host sockets, and any host filesystem outside the mounts above.
 
 ## Identity & Security
 
 - Runs as `tau` (UID 1000). No root, no sudo, no package-manager root access.
 - The VM is hardware-isolated: even a fully compromised guest cannot modify the host kernel or host files outside the mounts.
-- All mounts are host-side enforced: read-only mounts cannot be remounted writable from inside the VM.
-- Bind mounts are identity-virtualized: files you create in `/workspace` or `/home/tau` appear on the host under the host user's identity.
-- Writes to host config mounts (`/tau-source`, `/agents-source`) are impossible.
+- All mounts are host-side enforced; the config mounts are deliberately read-write so the agent can use the host's Tau login.
+- Bind mounts are identity-virtualized: files you create in `/workspace` or `/home/tau` (including the shared `~/.tau` and `~/.agents`) appear on the host under the host user's identity.
 - npm lifecycle scripts are disabled by default (`ignore-scripts=true`); opt in per-command with `--ignore-scripts=false`.
 
 ## Installed Tools
@@ -58,7 +57,7 @@ If the project needs system-level packages not available via pip/uv/npm:
 ## Persistence
 
 - `/workspace` and `/home/tau` persist across runs; everything else is ephemeral.
-- On each start, host config (`/tau-source`, `/agents-source`) is rsynced into `/home/tau/.tau/` and `/home/tau/.agents/`, preserving sessions, logs, credentials, and lock files.
+- `/home/tau/.tau` and `/home/tau/.agents` are the host's own config directories: sessions, logs, credentials, trust data, and lock files are the same inside the sandbox and on the host, and Tau login tokens from the host are usable here.
 - `APPEND_SYSTEM.md` (this file) is refreshed on every start from the sandbox repo or image.
 
 ## Shell
