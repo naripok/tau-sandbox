@@ -179,9 +179,10 @@ fi
 
 # --- Mounts ---
 # The project and per-project home are writable. Existing top-level entries in
-# host ~/.tau are resolved (following symlinks) and mounted individually
-# read-only under the bootstrap directory; the entrypoint refreshes them in the
-# persistent home on every start, where Tau can use
+# host ~/.tau are copied into a temporary snapshot with symlinks recursively
+# dereferenced, then mounted individually read-only under the bootstrap
+# directory. The entrypoint refreshes them in the persistent home on every
+# start, where Tau can use
 # atomic replacement without modifying the host defaults. credentials.json is
 # the sole host write exception. Sessions, logs, and trust state stay
 # per-project; the Tau wrapper makes OAuth writes safe for a mounted credential
@@ -193,6 +194,14 @@ MOUNT_ARGS=(
     -v "$(pwd):/workspace"
     -v "$PERSIST_VOLUME:/home/tau"
 )
+BOOTSTRAP_STAGE=""
+cleanup_bootstrap_stage() {
+    if [ -n "$BOOTSTRAP_STAGE" ]; then
+        rm -rf -- "$BOOTSTRAP_STAGE"
+    fi
+}
+trap cleanup_bootstrap_stage EXIT
+
 if [ -d "$CONFIG_DIR" ]; then
     shopt -s dotglob nullglob
     for entry in "$CONFIG_DIR"/*; do
@@ -202,13 +211,21 @@ if [ -d "$CONFIG_DIR" ]; then
                 continue
                 ;;
         esac
-        # Resolve top-level links on the host. This both makes linked config
-        # trees visible in the guest and keeps the bootstrap destination name.
         resolved_entry="$(realpath -e "$entry" 2>/dev/null || true)"
         if [ ! -f "$resolved_entry" ] && [ ! -d "$resolved_entry" ]; then
             continue
         fi
-        MOUNT_ARGS+=(-v "$resolved_entry:/etc/tau-sandbox/bootstrap/tau/$name:ro")
+        if [ -z "$BOOTSTRAP_STAGE" ]; then
+            BOOTSTRAP_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/tau-sandbox-bootstrap.XXXXXX")"
+        fi
+        # Dereference both top-level and nested links while still on the host,
+        # where absolute host paths are meaningful. The VM receives only the
+        # resulting snapshot, never broken links back into the host filesystem.
+        if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/$name"; then
+            echo "Error: failed to snapshot host Tau config entry: $entry" >&2
+            exit 1
+        fi
+        MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
     done
     shopt -u dotglob nullglob
 fi
@@ -231,7 +248,7 @@ MOUNT_ARGS+=(
 # Inbound stays closed because no ports are published. The low-level
 # --net-default-ingress deny path is intentionally avoided because it silently
 # dropped microsandbox's DNS allow rule.
-exec msb run \
+msb run \
     "${MOUNT_ARGS[@]}" \
     -c "$CPUS" \
     -m "$MEM" \

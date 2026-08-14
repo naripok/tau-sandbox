@@ -43,6 +43,18 @@ def _fake_env(tmp: pathlib.Path, cwd, fake_bin, msb_log, podman_log, images_file
 
 FAKE_MSB = """#!/bin/bash
 echo "msb $*" >> "$MSB_LOG"
+if [ "$1" = "run" ] && [ -n "${MSB_SNAPSHOT_CHECK:-}" ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            *:/etc/tau-sandbox/bootstrap/tau/skills:ro)
+                source="${arg%:/etc/tau-sandbox/bootstrap/tau/skills:ro}"
+                if [ -f "$source/linked-skill/SKILL.md" ] && [ ! -L "$source/linked-skill" ]; then
+                    printf 'dereferenced\\n' > "$MSB_SNAPSHOT_CHECK"
+                fi
+                ;;
+        esac
+    done
+fi
 case "$1" in
     images)
         if [ "$2" = "-q" ]; then
@@ -231,8 +243,10 @@ def test_run_script_mounts_host_config_as_bootstrap_with_shared_credentials(tmp_
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     bootstrap = "/etc/tau-sandbox/bootstrap/tau"
-    assert f"-v {tau_dir.resolve()}/skills:{bootstrap}/skills:ro" in run_line
-    assert f"-v {tau_dir.resolve()}/settings.json:{bootstrap}/settings.json:ro" in run_line
+    assert f":{bootstrap}/skills:ro" in run_line
+    assert f":{bootstrap}/settings.json:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/skills:{bootstrap}/skills:ro" not in run_line
+    assert f"-v {tau_dir.resolve()}/settings.json:{bootstrap}/settings.json:ro" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     shared_credentials = "/etc/tau-sandbox/shared/credentials.json"
     assert f"-v {tau_dir.resolve()}/credentials.json:{shared_credentials}" in run_line
@@ -255,6 +269,10 @@ def test_run_script_follows_host_config_symlinks(tmp_path):
     targets.mkdir()
     skills = targets / "skills"
     skills.mkdir()
+    skill_source = targets / "skill-source"
+    skill_source.mkdir()
+    (skill_source / "SKILL.md").write_text("# linked skill\n")
+    (skills / "linked-skill").symlink_to(skill_source, target_is_directory=True)
     extensions = targets / "extensions"
     extensions.mkdir()
     settings = targets / "settings.json"
@@ -263,13 +281,22 @@ def test_run_script_follows_host_config_symlinks(tmp_path):
     (tau_dir / "extensions").symlink_to(extensions, target_is_directory=True)
     (tau_dir / "settings.json").symlink_to(settings)
 
-    result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
+    snapshot_check = tmp_path / "snapshot-check"
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=tmp_path, env={"MSB_SNAPSHOT_CHECK": str(snapshot_check)}
+    )
     assert result.returncode == 0
+    assert snapshot_check.read_text() == "dereferenced\n"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     bootstrap = "/etc/tau-sandbox/bootstrap/tau"
-    assert f"-v {skills.resolve()}:{bootstrap}/skills:ro" in run_line
-    assert f"-v {extensions.resolve()}:{bootstrap}/extensions:ro" in run_line
-    assert f"-v {settings.resolve()}:{bootstrap}/settings.json:ro" in run_line
+    assert f":{bootstrap}/skills:ro" in run_line
+    assert f":{bootstrap}/extensions:ro" in run_line
+    assert f":{bootstrap}/settings.json:ro" in run_line
+    assert str(skills.resolve()) not in run_line
+    assert str(skill_source.resolve()) not in run_line
+    assert str(extensions.resolve()) not in run_line
+    assert str(settings.resolve()) not in run_line
+    assert "tau-sandbox-bootstrap." in run_line
 
 
 def test_run_script_skips_missing_host_config_mounts(tmp_path):

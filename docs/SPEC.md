@@ -48,7 +48,7 @@ The current directory SHALL be mounted read-write at `/workspace` and selected a
 
 ### Requirement: Host Tau config synchronizes into writable project config
 
-When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, and trust-store files. Top-level symlinks SHALL be resolved on the host and their regular file or directory targets mounted under the symlink's name, allowing linked skills, extensions, and other config to bootstrap. Dangling symlinks and special files SHALL be ignored:
+When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be copied to a temporary host-side snapshot and mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, trust-store files, and synchronization metadata. Symlinks SHALL be recursively dereferenced while creating the snapshot, allowing linked skills, extensions, and other config at any depth to synchronize without exposing broken host-absolute links inside the guest. Dangling symlinks SHALL fail startup, and special files SHALL be ignored:
 
 - Host `sessions` and `logs` SHALL NOT be mounted.
 - Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
@@ -69,10 +69,10 @@ On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<
 
 #### Scenario: Linked host resource seeds writable project state
 
-- GIVEN a host `~/.tau/skills` symlink targets a directory outside `~/.tau`
-- WHEN the project sandbox starts for the first time
-- THEN the target directory SHALL be mounted read-only under the bootstrap path
-- AND its contents SHALL be copied to `/home/tau/.tau/skills`
+- GIVEN a symlink within host `~/.tau/skills` targets a directory outside `~/.tau`
+- WHEN the project sandbox starts
+- THEN the target SHALL be dereferenced into the temporary host-side snapshot
+- AND the guest bootstrap and writable config paths SHALL contain an ordinary directory rather than the host symlink
 
 #### Scenario: Host resource seeds writable project state
 

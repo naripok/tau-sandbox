@@ -245,6 +245,12 @@ class TestHostConfigIsolation:
         tau_host.mkdir()
         (tau_host / "skills").mkdir()
         (tau_host / "skills" / "hello.md").write_text("# hello\n")
+        linked_skill = sandbox_home / "linked-skill"
+        linked_skill.mkdir()
+        (linked_skill / "SKILL.md").write_text("# linked\n")
+        (tau_host / "skills" / "linked").symlink_to(
+            linked_skill, target_is_directory=True
+        )
         settings = tau_host / "settings.json"
         settings.write_text('{"host": true}\n')
 
@@ -258,6 +264,8 @@ class TestHostConfigIsolation:
                 "test -L /home/tau/.tau/sessions && "
                 "test -L /home/tau/.tau/logs && "
                 "test -f /home/tau/.tau/skills/hello.md && "
+                "test -f /home/tau/.tau/skills/linked/SKILL.md && "
+                "test ! -L /home/tau/.tau/skills/linked && "
                 "cat /home/tau/.tau/settings.json && "
                 "printf '{\"sandbox\": true}\\n' > /home/tau/.tau/settings.json && "
                 "printf 'local\\n' > /home/tau/.tau/sandbox-only",

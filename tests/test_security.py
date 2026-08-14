@@ -42,10 +42,8 @@ def test_only_expected_paths_are_mounted(tmp_path):
     assert f"-v {tmp_path.resolve()}:/workspace" in run_line
     assert f"tau-persist-{tmp_path.name}-" in run_line and ":/home/tau" in run_line
     assert f"-v {tau_dir.resolve()}:/home/tau/.tau" not in run_line
-    assert (
-        f"-v {tau_dir.resolve()}/settings.json:"
-        "/etc/tau-sandbox/bootstrap/tau/settings.json:ro"
-    ) in run_line
+    assert ":/etc/tau-sandbox/bootstrap/tau/settings.json:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/settings.json:" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     assert (
         f"-v {tau_dir.resolve()}/credentials.json:"
@@ -56,10 +54,8 @@ def test_only_expected_paths_are_mounted(tmp_path):
     assert f"-v {tau_dir.resolve()}/sessions" not in run_line
     assert f"-v {tau_dir.resolve()}/logs" not in run_line
     assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
-    assert (
-        f"-v {outside.resolve()}:"
-        "/etc/tau-sandbox/bootstrap/tau/external-link:ro"
-    ) in run_line
+    assert ":/etc/tau-sandbox/bootstrap/tau/external-link:ro" in run_line
+    assert str(outside.resolve()) not in run_line
     assert f"-v {tau_dir.resolve()}/external-link" not in run_line
     assert ":/var/lib/tau-sandbox/sessions" in run_line
     assert ":/var/lib/tau-sandbox/logs" in run_line
@@ -78,10 +74,8 @@ def test_host_config_is_bootstrap_only_except_credentials(tmp_path):
 
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = _run_line(msb_log)
-    assert (
-        f"{tau_dir.resolve()}/settings.json:"
-        "/etc/tau-sandbox/bootstrap/tau/settings.json:ro"
-    ) in run_line
+    assert ":/etc/tau-sandbox/bootstrap/tau/settings.json:ro" in run_line
+    assert f"{tau_dir.resolve()}/settings.json:" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     credential_mount = (
         f"{tau_dir.resolve()}/credentials.json:"

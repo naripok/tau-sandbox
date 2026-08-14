@@ -11,7 +11,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/workspace` | Read-write host project directory |
 | `/home/tau` | Read-write persistent per-project home for tools, shell state, and other files |
 | `/home/tau/.tau/*` | Writable per-project Tau config, refreshed from host config on every start when host-managed |
-| `/etc/tau-sandbox/bootstrap/tau/*` | Read-only host Tau config sources, including resolved top-level symlink targets, used for startup synchronization |
+| `/etc/tau-sandbox/bootstrap/tau/*` | Read-only, recursively dereferenced snapshots of host Tau config used for startup synchronization |
 | `/home/tau/.tau/credentials.json` | Link to the shared host credential mount when present; otherwise project-local |
 | `/etc/tau-sandbox/shared/credentials.json` | Sole writable host-config mount when shared |
 | `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Links to read-write persistent per-project volumes; host history is not mounted |
@@ -23,7 +23,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 
 Host-managed Tau config is refreshed into the writable project home whenever the sandbox starts. Host changes, additions, and removals therefore appear on the next start; sandbox edits to host-managed resources last only for the current run. Config created only inside the sandbox remains persistent. `tau-sandbox --reset` deletes the per-project home, sessions, and logs. Shared credentials and host config remain untouched by reset.
 
-Resolved Tau config-link targets are explicit read-only mounts. Other projects, the rest of the host home, host SSH keys (unless stored in this project), unrelated dotfiles, host sockets, and paths outside the declared mounts are inaccessible.
+Host Tau config symlinks are dereferenced into temporary snapshots before mounting. Other projects, the rest of the host home, host SSH keys (unless copied through a Tau config link), unrelated dotfiles, host sockets, and paths outside the declared mounts are inaccessible.
 
 ## Security
 
