@@ -1,3 +1,5 @@
+<sandbox_context>
+
 # Agent Environment Reference
 
 > This document is injected into your system prompt so you know what your sandbox can and cannot do. Treat it as reference material about the environment's constraints and capabilities.
@@ -22,7 +24,7 @@ You are running inside a **hardware-isolated microsandbox microVM** (Arch Linux)
 
 **Key rule:** only `/workspace`, `/home/tau`, and the credentials exception can affect persistent host or per-project state. Root-overlay and `/tmp` changes disappear when the VM exits.
 
-**Not accessible:** other project directories, the rest of the host home, host SSH keys, unrelated dotfiles, host sockets, and every host path outside the declared mounts.
+**Not accessible:** other project directories, the rest of the host home, host SSH keys (unless explicitly passed within the project's directory), unrelated dotfiles, host sockets, and every host path outside the declared mounts.
 
 ## Identity & Security
 
@@ -80,15 +82,13 @@ Bash is the default shell. `PATH` includes `~/.local/bin`; `PYTHONUSERBASE`, `NP
 
 ## Troubleshooting
 
-| Problem                                     | Solution                                                                       |
-| ------------------------------------------- | ------------------------------------------------------------------------------ |
-| Command not found                           | Use `pip install --user`, `uv tool install`, or `npm install -g`.              |
-| Cannot install a system package             | Add it to `.tau-packages` and ask the user to approve a rebuild.               |
-| A rootfs or `/tmp` change vanished          | Those filesystems are disposable; persist data in `/workspace` or `/home/tau`. |
-| Cannot change global Tau settings/resources | Host config is read-only; change it on the host or use project-local config.   |
-| npm fails on native modules                 | Opt in with `npm install --ignore-scripts=false`.                              |
-| Cannot reach a host service on localhost    | The microVM has a separate network stack.                                      |
+| Problem                                     | Solution                                                                            |
+| ------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Command not found                           | Use `pip install --user`, `uv tool install`, or `npm install -g`.                   |
+| Cannot install a system package             | Add it to `.tau-packages` and ask the user to approve a rebuild.                    |
+| A rootfs or `/tmp` change vanished          | Those filesystems are disposable; persist data in `/workspace` or `/home/tau`.      |
+| Cannot change global Tau settings/resources | Host config is read-only; ask to change it on the host or use project-local config. |
+| npm fails on native modules                 | Opt in with `npm install --ignore-scripts=false`.                                   |
+| Cannot reach a host service on localhost    | The microVM has a separate network stack.                                           |
 
-## Agent Behavior
-
-Continue with your regular agent behavior, keeping these limitations and capabilities in mind.
+</sandbox_context>
