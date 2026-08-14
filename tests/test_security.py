@@ -38,7 +38,7 @@ def test_only_expected_paths_are_mounted(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = _run_line(msb_log)
-    assert run_line.count(" -v ") == 8
+    assert run_line.count(" -v ") == 9
     assert f"-v {tmp_path.resolve()}:/workspace" in run_line
     assert f"tau-persist-{tmp_path.name}-" in run_line and ":/home/tau" in run_line
     assert f"-v {tau_dir.resolve()}:/home/tau/.tau" not in run_line
@@ -56,7 +56,10 @@ def test_only_expected_paths_are_mounted(tmp_path):
     assert f"-v {tau_dir.resolve()}/sessions" not in run_line
     assert f"-v {tau_dir.resolve()}/logs" not in run_line
     assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
-    assert str(outside.resolve()) not in run_line
+    assert (
+        f"-v {outside.resolve()}:"
+        "/etc/tau-sandbox/bootstrap/tau/external-link:ro"
+    ) in run_line
     assert f"-v {tau_dir.resolve()}/external-link" not in run_line
     assert ":/var/lib/tau-sandbox/sessions" in run_line
     assert ":/var/lib/tau-sandbox/logs" in run_line

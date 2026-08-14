@@ -48,7 +48,7 @@ The current directory SHALL be mounted read-write at `/workspace` and selected a
 
 ### Requirement: Host Tau defaults bootstrap writable project config
 
-When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, and trust-store files. Top-level symlinks and special files SHALL be ignored so they cannot expand the host-path allowlist:
+When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, and trust-store files. Top-level symlinks SHALL be resolved on the host and their regular file or directory targets mounted under the symlink's name, allowing linked skills, extensions, and other config to bootstrap. Dangling symlinks and special files SHALL be ignored:
 
 - Host `sessions` and `logs` SHALL NOT be mounted.
 - Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
@@ -66,6 +66,13 @@ On the first start of a project's persistent home, the entrypoint SHALL copy eac
 - WHEN it prepares credential, session, and log mounts before launching UID 1000
 - THEN none of those mount targets SHALL create `/home/tau/.tau`
 - AND the entrypoint SHALL create a writable Tau directory and normal-path links
+
+#### Scenario: Linked host resource seeds writable project state
+
+- GIVEN a host `~/.tau/skills` symlink targets a directory outside `~/.tau`
+- WHEN the project sandbox starts for the first time
+- THEN the target directory SHALL be mounted read-only under the bootstrap path
+- AND its contents SHALL be copied to `/home/tau/.tau/skills`
 
 #### Scenario: Host resource seeds writable project state
 

@@ -246,6 +246,32 @@ def test_run_script_mounts_host_config_as_bootstrap_with_shared_credentials(tmp_
     assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
 
 
+def test_run_script_follows_host_config_symlinks(tmp_path):
+    """Linked config resources are mounted by target under their link names."""
+    (tmp_path / ".env").write_text("")
+    tau_dir = tmp_path / ".tau"
+    tau_dir.mkdir()
+    targets = tmp_path / "config-targets"
+    targets.mkdir()
+    skills = targets / "skills"
+    skills.mkdir()
+    extensions = targets / "extensions"
+    extensions.mkdir()
+    settings = targets / "settings.json"
+    settings.write_text("{}\n")
+    (tau_dir / "skills").symlink_to(skills, target_is_directory=True)
+    (tau_dir / "extensions").symlink_to(extensions, target_is_directory=True)
+    (tau_dir / "settings.json").symlink_to(settings)
+
+    result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    bootstrap = "/etc/tau-sandbox/bootstrap/tau"
+    assert f"-v {skills.resolve()}:{bootstrap}/skills:ro" in run_line
+    assert f"-v {extensions.resolve()}:{bootstrap}/extensions:ro" in run_line
+    assert f"-v {settings.resolve()}:{bootstrap}/settings.json:ro" in run_line
+
+
 def test_run_script_skips_missing_host_config_mounts(tmp_path):
     """Absent host config leaves Tau state local to the persistent home."""
     (tmp_path / ".env").write_text("")

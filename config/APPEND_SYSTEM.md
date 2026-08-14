@@ -11,7 +11,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/workspace` | Read-write host project directory |
 | `/home/tau` | Read-write persistent per-project home for tools, shell state, and other files |
 | `/home/tau/.tau/*` | Writable persistent per-project Tau config, seeded once from host defaults |
-| `/etc/tau-sandbox/bootstrap/tau/*` | Read-only host Tau config sources used only for first-run seeding |
+| `/etc/tau-sandbox/bootstrap/tau/*` | Read-only host Tau config sources, including resolved top-level symlink targets, used only for first-run seeding |
 | `/home/tau/.tau/credentials.json` | Link to the shared host credential mount when present; otherwise project-local |
 | `/etc/tau-sandbox/shared/credentials.json` | Sole writable host-config mount when shared |
 | `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Links to read-write persistent per-project volumes; host history is not mounted |
@@ -23,7 +23,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 
 Host Tau defaults are copied only when a project's persistent home is first initialized. Later sandbox config changes persist without modifying those host defaults, and later host changes do not overwrite the project copy. `tau-sandbox --reset` deletes the per-project home, sessions, and logs; the next run seeds a fresh copy. Shared credentials and host config remain untouched by reset.
 
-Other projects, the rest of the host home, host SSH keys (unless stored in this project), unrelated dotfiles, host sockets, and paths outside these mounts are inaccessible.
+Resolved Tau config-link targets are explicit read-only mounts. Other projects, the rest of the host home, host SSH keys (unless stored in this project), unrelated dotfiles, host sockets, and paths outside the declared mounts are inaccessible.
 
 ## Security
 

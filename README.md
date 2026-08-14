@@ -170,7 +170,7 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 
 ### Host Config and Isolated State
 
-`run.sh` mounts existing regular top-level host `~/.tau` files and directories individually and read-only under `/etc/tau-sandbox/bootstrap/tau`, excluding credentials, sessions, logs, trust-store files, and symlinks. On the first run for a project, the entrypoint copies those settings, providers, catalogs, prompts, skills, themes, extensions, and other resources into the persistent home. A marker prevents later host changes from overwriting the project's copy. `tau-sandbox --reset` removes the copy, so the next run bootstraps again from the then-current host defaults.
+`run.sh` mounts existing regular top-level host `~/.tau` files and directories individually and read-only under `/etc/tau-sandbox/bootstrap/tau`, excluding credentials, sessions, logs, and trust-store files. Top-level symlinks are resolved on the host, so linked skills, extensions, themes, prompts, and other config are mounted from their targets under their original names; dangling links and special files are skipped. On the first run for a project, the entrypoint copies those resources into the persistent home. A marker prevents later host changes from overwriting the project's copy. `tau-sandbox --reset` removes the copy, so the next run bootstraps again from the then-current host defaults.
 
 This separate source and destination layout is required for Tau's atomic config writes. Tau writes a sibling temporary file and renames it over files such as `providers.json`; a file bind mount is itself a mount point and Linux rejects replacement with `EBUSY`. The project-local copy is on one writable filesystem, so atomic replacement works and model, provider, scoped-model, and thinking-effort changes persist normally.
 
@@ -185,7 +185,7 @@ Host sessions and logs are excluded and replaced by per-project named volumes. T
 | Threat                             | Mitigation                                                                                                                                  |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent reads other projects         | Only the current directory is mounted as `/workspace`                                                                                       |
-| Agent modifies host Tau config     | Tau defaults and `.agents` sources are read-only; writable config is project-local, with only `credentials.json` shared for login and OAuth refresh |
+| Agent modifies host Tau config     | Tau defaults, resolved config-link targets, and `.agents` sources are read-only; writable config is project-local, with only `credentials.json` shared for login and OAuth refresh |
 | Agent modifies host history/trust  | Sessions, diagnostic logs, and trust decisions use isolated per-project state                                                                |
 | Agent escapes to host filesystem   | Hardware-isolated microVM; mounts are brokered host-side with path containment and identity virtualization                                  |
 | Agent escalates to root in guest   | Runs as unprivileged `tau` (1000), uses the `restricted` profile, and has no setuid/setgid image binaries                                    |

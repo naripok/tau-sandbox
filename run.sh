@@ -179,8 +179,9 @@ fi
 
 # --- Mounts ---
 # The project and per-project home are writable. Existing top-level entries in
-# host ~/.tau are mounted individually read-only under the bootstrap directory;
-# the entrypoint copies them into the persistent home once, where Tau can use
+# host ~/.tau are resolved (following symlinks) and mounted individually
+# read-only under the bootstrap directory; the entrypoint copies them into the
+# persistent home once, where Tau can use
 # atomic replacement without modifying the host defaults. credentials.json is
 # the sole host write exception. Sessions, logs, and trust state stay
 # per-project; the Tau wrapper makes OAuth writes safe for a mounted credential
@@ -195,17 +196,19 @@ MOUNT_ARGS=(
 if [ -d "$CONFIG_DIR" ]; then
     shopt -s dotglob nullglob
     for entry in "$CONFIG_DIR"/*; do
-        [ -L "$entry" ] && continue
-        if [ ! -f "$entry" ] && [ ! -d "$entry" ]; then
-            continue
-        fi
         name="${entry##*/}"
         case "$name" in
             credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending)
                 continue
                 ;;
         esac
-        MOUNT_ARGS+=(-v "$entry:/etc/tau-sandbox/bootstrap/tau/$name:ro")
+        # Resolve top-level links on the host. This both makes linked config
+        # trees visible in the guest and keeps the bootstrap destination name.
+        resolved_entry="$(realpath -e "$entry" 2>/dev/null || true)"
+        if [ ! -f "$resolved_entry" ] && [ ! -d "$resolved_entry" ]; then
+            continue
+        fi
+        MOUNT_ARGS+=(-v "$resolved_entry:/etc/tau-sandbox/bootstrap/tau/$name:ro")
     done
     shopt -u dotglob nullglob
 fi
