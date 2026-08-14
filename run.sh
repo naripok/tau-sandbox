@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Launch the Tau agent sandbox: a hardware-isolated microsandbox microVM.
-# The VM is ephemeral (discarded after every run); durable state lives in a
-# per-project persistent named volume mounted at /home/tau.
+# The VM is ephemeral; durable home, session, and log state lives in isolated
+# per-project named volumes.
 
 # --- Configuration (host side) ---
 # TAU_IMAGE: full image reference passed to msb (bypasses .tau-packages).
-# TAU_CONFIG_DIR/TAU_AGENTS_DIR: host config mounted into the sandbox home
-# so the agent reads and writes the same config as the host.
+# TAU_CONFIG_DIR/TAU_AGENTS_DIR: host resources exposed read-only at their
+# normal sandbox-home paths, except for the writable credentials file.
 # TAU_ENV_FILE: env file whose variables are forwarded into the VM.
 IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
 CONFIG_DIR="${TAU_CONFIG_DIR:-${HOME}/.tau}"
@@ -18,18 +18,23 @@ CPUS="${TAU_CPUS:-4}"
 MEM="${TAU_MEM:-8G}"
 PIDS="${TAU_PIDS:-1024}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -d "$CONFIG_DIR" ] && CONFIG_DIR="$(realpath "$CONFIG_DIR")"
+[ -d "$AGENTS_DIR" ] && AGENTS_DIR="$(realpath "$AGENTS_DIR")"
 
 # Derive persistent volume name from project path.
 # The basename makes "msb volume ls" output meaningful.
 # The 8-char hash suffix guarantees uniqueness.
 PROJECT_PATH="$(realpath "$(pwd)")"
 PROJECT_NAME="$(basename "$PROJECT_PATH")"
-PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-$(echo "$PROJECT_PATH" | sha256sum | cut -c1-8)"
+PROJECT_HASH="$(echo "$PROJECT_PATH" | sha256sum | cut -c1-8)"
+PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-${PROJECT_HASH}"
+SESSIONS_VOLUME="tau-sessions-${PROJECT_NAME}-${PROJECT_HASH}"
+LOGS_VOLUME="tau-logs-${PROJECT_NAME}-${PROJECT_HASH}"
 
-# Handle --reset flag: remove the persistent volume and exit.
+# Handle --reset flag: remove all per-project volumes and exit.
 if [ "${1:-}" = "--reset" ]; then
-    msb volume rm "$PERSIST_VOLUME" >/dev/null 2>&1 || true
-    echo "Volume $PERSIST_VOLUME removed."
+    msb volume rm "$PERSIST_VOLUME" "$SESSIONS_VOLUME" "$LOGS_VOLUME" >/dev/null 2>&1 || true
+    echo "Volumes $PERSIST_VOLUME, $SESSIONS_VOLUME, and $LOGS_VOLUME removed."
     exit 0
 fi
 
@@ -172,17 +177,45 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # --- Mounts ---
-# Workspace + persistent home are always mounted. The host's Tau config
-# dirs are mounted read-write into the sandbox home (nested inside the
-# volume mount) so the agent picks up the host's login tokens, skills, and
-# sessions; writes reach the host via identity virtualization. Mounts are
-# added only when the source directory exists.
+# The project and per-project home are writable. Existing top-level entries in
+# host ~/.tau are mounted individually read-only so Tau discovers them at its
+# normal paths without exposing the host config directory itself as writable.
+# credentials.json is the sole host write exception. Sessions, logs, and trust
+# state stay per-project; the Tau wrapper makes OAuth writes safe for a mounted
+# credential file. Host history and trust decisions are never modified.
 MOUNT_ARGS=(
     -v "$(pwd):/workspace"
     -v "$PERSIST_VOLUME:/home/tau"
 )
-[ -d "$CONFIG_DIR" ] && MOUNT_ARGS+=(-v "$CONFIG_DIR:/home/tau/.tau")
-[ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents")
+if [ -d "$CONFIG_DIR" ]; then
+    shopt -s dotglob nullglob
+    for entry in "$CONFIG_DIR"/*; do
+        [ -L "$entry" ] && continue
+        if [ ! -f "$entry" ] && [ ! -d "$entry" ]; then
+            continue
+        fi
+        name="${entry##*/}"
+        case "$name" in
+            credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending)
+                continue
+                ;;
+        esac
+        MOUNT_ARGS+=(-v "$entry:/home/tau/.tau/$name:ro")
+    done
+    shopt -u dotglob nullglob
+fi
+if [ -f "$CONFIG_DIR/credentials.json" ] && [ ! -L "$CONFIG_DIR/credentials.json" ]; then
+    MOUNT_ARGS+=(-v "$CONFIG_DIR/credentials.json:/home/tau/.tau/credentials.json")
+    ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=1")
+else
+    ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=0")
+fi
+[ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents:ro")
+MOUNT_ARGS+=(
+    -v "$SESSIONS_VOLUME:/home/tau/.tau/sessions"
+    -v "$LOGS_VOLUME:/home/tau/.tau/logs"
+    -v "$SCRIPT_DIR/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro"
+)
 
 # --- Run ---
 # Public network profile: msb auto-allows egress and gateway DNS, and keeps
@@ -195,6 +228,7 @@ exec msb run \
     -m "$MEM" \
     --rlimit "nproc=${PIDS}" \
     --security restricted \
+    --tmpfs /tmp \
     --user 1000:1000 \
     --net public \
     --label "project=${PROJECT_NAME}" \

@@ -1,10 +1,10 @@
 """End-to-end integration tests against real microsandbox microVMs.
 
 These tests exercise the full launch path (run.sh -> msb run -> boot ->
-entrypoint -> command) and prove the sandbox contract: workspace bind
-mount, persistent volume, ephemeral rootfs, shared host config mounts at
-/home/tau/.tau and /home/tau/.agents, unprivileged execution, env
-forwarding, and volume isolation between projects.
+entrypoint -> command) and prove the sandbox contract: workspace binding,
+isolated persistent state, ephemeral filesystems, read-only host resources,
+the credential write exception, unprivileged execution, environment forwarding,
+and volume isolation between projects.
 
 The test image is built and loaded once per session by the loaded_image
 fixture. Tests are skipped when msb or podman is unavailable.
@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from conftest import TEST_IMAGE_REF, skip_without_msb, volume_name_for
+from conftest import TEST_IMAGE_REF, skip_without_msb, volume_names_for
 
 
 def _host_can_resolve(name: str) -> bool:
@@ -161,21 +161,24 @@ class TestPersistence:
             assert r1.returncode == 0 and r2.returncode == 0
             assert "secret-a" not in r2.stdout
         finally:
-            subprocess.run(["msb", "volume", "rm", volume_name_for(str(proj_a.resolve()))], capture_output=True)
-            subprocess.run(["msb", "volume", "rm", volume_name_for(str(proj_b.resolve()))], capture_output=True)
+            subprocess.run(
+                ["msb", "volume", "rm", *volume_names_for(str(proj_a.resolve()))],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["msb", "volume", "rm", *volume_names_for(str(proj_b.resolve()))],
+                capture_output=True,
+            )
 
 
 @pytest.mark.usefixtures("loaded_image", "volume_cleanup")
-class TestHostConfigSync:
-    """Shared host config mounts at the sandbox home config paths."""
+class TestHostConfigIsolation:
+    """Host resources are immutable except for shared credentials."""
 
     def test_login_tokens_are_available_to_the_agent(self, tmp_path, sandbox_home):
-        """Tau's login token file (~/.tau/credentials.json) on the host is
-        the same file inside the sandbox, so the sandboxed agent can use the
-        host's login to call models. This is the regression the shared mount
-        fixes: the old rsync path excluded credentials entirely."""
-        (sandbox_home / ".tau-host").mkdir()
-        (sandbox_home / ".tau-host" / "credentials.json").write_text(
+        tau_host = sandbox_home / ".tau-host"
+        tau_host.mkdir()
+        (tau_host / "credentials.json").write_text(
             '{"openrouter": "sk-fake-token"}\n'
         )
         result = run_sandbox(
@@ -184,65 +187,150 @@ class TestHostConfigSync:
         assert result.returncode == 0
         assert "sk-fake-token" in result.stdout
 
-    def test_host_config_is_visible_immediately(self, tmp_path, sandbox_home):
-        """Host skills are visible in the sandbox home on the same run —
-        the mount replaces the one-boot-later rsync propagation."""
-        (sandbox_home / ".tau-host").mkdir()
-        (sandbox_home / ".tau-host" / "skills").mkdir()
-        (sandbox_home / ".tau-host" / "skills" / "hello.md").write_text("# hello\n")
-        result = run_sandbox(tmp_path, sandbox_home, ["ls", "/home/tau/.tau/skills/"])
-        assert result.returncode == 0
-        assert "hello.md" in result.stdout
+    def test_tau_wrapper_updates_shared_credentials_in_place(self, tmp_path, sandbox_home):
+        tau_host = sandbox_home / ".tau-host"
+        tau_host.mkdir()
+        credentials = tau_host / "credentials.json"
+        credentials.write_text('{"openrouter": "old-token"}\n')
+        script = (
+            "import runpy; "
+            "runpy.run_path('/usr/local/bin/tau', run_name='tau_wrapper_test'); "
+            "from tau_coding.credentials import FileCredentialStore; "
+            "FileCredentialStore().set('openrouter', 'new-token')"
+        )
+        result = run_sandbox(tmp_path, sandbox_home, ["python", "-c", script])
+        assert result.returncode == 0, result.stderr
+        assert "new-token" in credentials.read_text()
 
-    def test_guest_writes_reach_host_config(self, tmp_path, sandbox_home):
-        """Writes to the shared /home/tau/.tau land on the host's ~/.tau via
-        identity virtualization (Tau token refresh must persist host-side)."""
-        (sandbox_home / ".tau-host").mkdir()
+    def test_host_resources_are_visible_and_readonly(self, tmp_path, sandbox_home):
+        tau_host = sandbox_home / ".tau-host"
+        tau_host.mkdir()
+        (tau_host / "skills").mkdir()
+        (tau_host / "skills" / "hello.md").write_text("# hello\n")
+        settings = tau_host / "settings.json"
+        settings.write_text("{}\n")
+
         result = run_sandbox(
             tmp_path,
             sandbox_home,
-            ["sh", "-c", "echo refreshed > /home/tau/.tau/refresh-marker.txt"],
+            [
+                "sh",
+                "-c",
+                "test -f /home/tau/.tau/skills/hello.md && "
+                "! echo changed > /home/tau/.tau/settings.json && echo PROTECTED",
+            ],
         )
-        assert result.returncode == 0
-        assert (sandbox_home / ".tau-host" / "refresh-marker.txt").read_text().strip() == "refreshed"
+        assert result.returncode == 0, result.stderr
+        assert "PROTECTED" in result.stdout
+        assert settings.read_text() == "{}\n"
 
-    def test_append_system_doc_is_refreshed(self, tmp_path, sandbox_home):
-        """APPEND_SYSTEM.md lands in the agent's ~/.tau (the shared host
-        config when mounted) for Tau to inject; the repo copy (when
-        /workspace is the checkout) takes precedence."""
-        (tmp_path / "config").mkdir()
-        (tmp_path / "config" / "APPEND_SYSTEM.md").write_text(
-            "REPO_COPY_MARKER_42\n"
-        )
+    def test_host_agents_are_readonly(self, tmp_path, sandbox_home):
+        agents_host = sandbox_home / ".agents-host"
+        agents_host.mkdir()
+        skill = agents_host / "AGENTS.md"
+        skill.write_text("host instructions\n")
         result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/APPEND_SYSTEM.md"]
+            tmp_path,
+            sandbox_home,
+            ["sh", "-c", "! echo changed > /home/tau/.agents/AGENTS.md && echo PROTECTED"],
         )
-        assert result.returncode == 0
-        assert "REPO_COPY_MARKER_42" in result.stdout
+        assert result.returncode == 0, result.stderr
+        assert "PROTECTED" in result.stdout
+        assert skill.read_text() == "host instructions\n"
 
-    def test_append_system_doc_falls_back_to_image(self, tmp_path, sandbox_home):
-        """Without a repo copy, the image-baked environment reference is used."""
+    def test_trust_store_is_project_local(self, tmp_path, sandbox_home):
+        tau_host = sandbox_home / ".tau-host"
+        tau_host.mkdir()
+        host_trust = tau_host / "trust.json"
+        host_trust.write_text('{"host": true}\n')
         result = run_sandbox(
-            tmp_path, sandbox_home, ["sh", "-c", "test -f /home/tau/.tau/APPEND_SYSTEM.md && grep -q 'microsandbox microVM' /home/tau/.tau/APPEND_SYSTEM.md && echo INJECTED || echo MISSING"]
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "test ! -e /home/tau/.tau/trust.json && "
+                "echo sandbox > /home/tau/.tau/trust.json",
+            ],
+        )
+        assert result.returncode == 0, result.stderr
+        result = run_sandbox(
+            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/trust.json"]
         )
         assert result.returncode == 0
-        assert "INJECTED" in result.stdout
+        assert result.stdout.strip() == "sandbox"
+        assert host_trust.read_text() == '{"host": true}\n'
+
+    def test_sessions_and_logs_are_isolated_and_persistent(self, tmp_path, sandbox_home):
+        tau_host = sandbox_home / ".tau-host"
+        (tau_host / "sessions").mkdir(parents=True)
+        (tau_host / "logs").mkdir()
+        (tau_host / "sessions" / "host-session").write_text("host\n")
+        (tau_host / "logs" / "host-log").write_text("host\n")
+
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "test ! -e /home/tau/.tau/sessions/host-session && "
+                "test ! -e /home/tau/.tau/logs/host-log && "
+                "echo sandbox > /home/tau/.tau/sessions/sandbox-session && "
+                "echo sandbox > /home/tau/.tau/logs/sandbox-log",
+            ],
+        )
+        assert result.returncode == 0, result.stderr
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "cat /home/tau/.tau/sessions/sandbox-session && "
+                "cat /home/tau/.tau/logs/sandbox-log",
+            ],
+        )
+        assert result.returncode == 0
+        assert result.stdout.count("sandbox") == 2
+        assert not (tau_host / "sessions" / "sandbox-session").exists()
+        assert not (tau_host / "logs" / "sandbox-log").exists()
+
+    def test_sandbox_reference_is_immutable_and_does_not_overwrite_host(self, tmp_path, sandbox_home):
+        tau_host = sandbox_home / ".tau-host"
+        tau_host.mkdir()
+        host_append = tau_host / "APPEND_SYSTEM.md"
+        host_append.write_text("HOST_APPEND\n")
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "grep -q 'microsandbox microVM' /etc/tau-sandbox/APPEND_SYSTEM.md && "
+                "! echo changed > /etc/tau-sandbox/APPEND_SYSTEM.md && "
+                "cat /home/tau/.tau/APPEND_SYSTEM.md",
+            ],
+        )
+        assert result.returncode == 0, result.stderr
+        assert "HOST_APPEND" in result.stdout
+        assert host_append.read_text() == "HOST_APPEND\n"
 
 
 @pytest.mark.usefixtures("loaded_image")
 class TestReset:
-    """--reset wipes the project's persistent volume."""
+    """--reset wipes all per-project volumes."""
 
     @skip_without_msb
     def test_reset_removes_volume(self, tmp_path, sandbox_home):
         result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", "echo x > /home/tau/persist.txt"])
         assert result.returncode == 0
-        volume = volume_name_for(str(tmp_path))
+        volumes = volume_names_for(str(tmp_path))
         ls = subprocess.run(["msb", "volume", "ls"], capture_output=True, text=True)
-        assert volume in ls.stdout
+        assert all(volume in ls.stdout for volume in volumes)
 
         result = run_sandbox(tmp_path, sandbox_home, ["--reset"])
         assert result.returncode == 0
         assert "removed" in result.stdout
         ls = subprocess.run(["msb", "volume", "ls"], capture_output=True, text=True)
-        assert volume not in ls.stdout
+        assert all(volume not in ls.stdout for volume in volumes)

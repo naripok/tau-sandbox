@@ -63,27 +63,29 @@ def loaded_image():
     subprocess.run(["podman", "rmi", TEST_IMAGE], capture_output=True)
 
 
-def volume_name_for(project_path: str) -> str:
-    """Derive the persistent volume name matching run.sh logic.
-
-    run.sh hashes `echo "$PROJECT_PATH" | sha256sum`, so the trailing
-    newline from echo must be included for the hashes to agree.
-    """
+def volume_names_for(project_path: str) -> tuple[str, str, str]:
+    """Derive the home, session, and log volume names used by run.sh."""
     resolved = str(pathlib.Path(project_path).resolve())
     project_name = pathlib.Path(project_path).name
+    # run.sh hashes echo output, including its trailing newline.
     hash_suffix = hashlib.sha256((resolved + "\n").encode()).hexdigest()[:8]
-    return f"tau-persist-{project_name}-{hash_suffix}"
+    return (
+        f"tau-persist-{project_name}-{hash_suffix}",
+        f"tau-sessions-{project_name}-{hash_suffix}",
+        f"tau-logs-{project_name}-{hash_suffix}",
+    )
+
+
+def volume_name_for(project_path: str) -> str:
+    """Return the home volume name for callers that need that specific mount."""
+    return volume_names_for(project_path)[0]
 
 
 @pytest.fixture
 def volume_cleanup(tmp_path):
-    """Remove the persistent volume (and any project config mounted from the
-    sandbox config dir) created for a temporary test project.
-
-    Yields (tmp_path, home_dir) and cleans up the derived volume on exit.
-    """
+    """Remove all per-project volumes created for a temporary test project."""
     yield tmp_path, tmp_path
     subprocess.run(
-        ["msb", "volume", "rm", volume_name_for(str(tmp_path))],
+        ["msb", "volume", "rm", *volume_names_for(str(tmp_path))],
         capture_output=True,
     )

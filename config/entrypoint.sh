@@ -5,36 +5,23 @@ set -euo pipefail
 # inside a hardware-isolated microsandbox microVM.
 #
 # Filesystem layout:
-#   /workspace          project bind mount (rw)
-#   /home/tau           persistent named volume
-#   /home/tau/.tau      host ~/.tau      (shared read-write; may be absent)
-#   /home/tau/.agents   host ~/.agents   (shared read-write; may be absent)
+#   /workspace                 project bind mount (rw)
+#   /home/tau                  persistent named volume
+#   /home/tau/.tau/<resources> host ~/.tau entries (ro, when present)
+#   /home/tau/.tau/credentials.json
+#                               host credential file (rw exception)
+#   /home/tau/.tau/sessions    isolated per-project volume (rw)
+#   /home/tau/.tau/logs        isolated per-project volume (rw)
+#   /home/tau/.tau/trust.json  isolated state in the home volume (rw)
+#   /home/tau/.agents          host ~/.agents (ro, when present)
 #
-# run.sh mounts the host config dirs into the sandbox home, so the agent
-# reads and writes the same Tau config as the host: login tokens
-# (credentials.json), skills, prompts, themes, sessions, and logs. Writes
-# reach the host through microsandbox identity virtualization.
-#
-# The microVM rootfs is ephemeral — it is discarded after every run.
-# Everything that must survive lives under /home/tau or in the shared
-# config mounts.
+# The microVM rootfs uses a disposable writable overlay and is discarded after
+# every run. Everything that must survive lives in /workspace or /home/tau.
 
 TAU_HOME=/home/tau
 TAU_DIR="$TAU_HOME/.tau"
 
 mkdir -p "$TAU_HOME/.local/bin" "$TAU_DIR" "$TAU_HOME/.agents"
-
-# Appended system prompt describing this sandbox. Refreshed every start so
-# it stays in sync with the repo (when /workspace is the tau-sandbox checkout)
-# and with the image copy baked into /etc/tau-sandbox.
-#
-# The target is the agent's config dir (~/.tau), which is the host's own
-# ~/.tau when run.sh mounted it there.
-if [ -f /workspace/config/APPEND_SYSTEM.md ]; then
-    cp /workspace/config/APPEND_SYSTEM.md "$TAU_DIR/APPEND_SYSTEM.md"
-elif [ -f /etc/tau-sandbox/APPEND_SYSTEM.md ]; then
-    cp /etc/tau-sandbox/APPEND_SYSTEM.md "$TAU_DIR/APPEND_SYSTEM.md"
-fi
 
 # First-run shell setup. The volume persists, so these run once per project.
 if [ ! -f "$TAU_HOME/.bashrc" ]; then

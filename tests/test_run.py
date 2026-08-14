@@ -156,17 +156,23 @@ def test_run_script_generates_correct_msb_command():
     assert result.returncode == 0, f"stderr: {result.stderr}"
 
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    # Mounts: workspace (resolved path) and persistent volume
+    # Mounts: workspace plus isolated home, session, and log volumes.
     assert "-v " in run_line and ":/workspace" in run_line
     persist_token = next(tok for tok in run_line.split() if tok.startswith("tau-persist-"))
     assert "tau-persist-tau-run-test-" in persist_token
     assert persist_token.endswith(":/home/tau")
+    assert "tau-sessions-tau-run-test-" in run_line
+    assert ":/home/tau/.tau/sessions" in run_line
+    assert "tau-logs-tau-run-test-" in run_line
+    assert ":/home/tau/.tau/logs" in run_line
+    assert "/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro" in run_line
     # Resources and limits
     assert "-c 4" in run_line
     assert "-m 8G" in run_line
     assert "--rlimit nproc=1024" in run_line
     # Security posture
     assert "--security restricted" in run_line
+    assert "--tmpfs /tmp" in run_line
     assert "--user 1000:1000" in run_line
     # Public profile: egress + gateway DNS from msb, inbound closed (no
     # published ports). The old --net-default-ingress deny path silently
@@ -203,27 +209,45 @@ def test_run_script_forwards_env_file(tmp_path):
     assert "test-vllm-key" not in result.stderr
 
 
-def test_run_script_mounts_host_config_into_sandbox_home(tmp_path):
-    """Existing ~/.tau and ~/.agents dirs are mounted read-write into the
-    sandbox home so the agent reads/writes the host's login config."""
+def test_run_script_mounts_host_config_with_credentials_only_writable(tmp_path):
+    """Host resources are read-only, while credentials remain writable."""
     (tmp_path / ".env").write_text("")
-    (tmp_path / ".tau").mkdir()
+    tau_dir = tmp_path / ".tau"
+    tau_dir.mkdir()
+    (tau_dir / "skills").mkdir()
+    (tau_dir / "settings.json").write_text("{}\n")
+    (tau_dir / "credentials.json").write_text("{}\n")
+    (tau_dir / "sessions").mkdir()
+    (tau_dir / "logs").mkdir()
+    (tau_dir / "trust.json").write_text('{"version": 1, "decisions": []}\n')
+    (tau_dir / "trust.json.lock").write_text("")
     (tmp_path / ".agents").mkdir()
+
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert f"-v {tmp_path.resolve()}/.tau:/home/tau/.tau" in run_line
-    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents" in run_line
+    assert f"-v {tau_dir.resolve()}/skills:/home/tau/.tau/skills:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json" in run_line
+    assert f"{tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json:ro" not in run_line
+    assert f"-v {tau_dir.resolve()}/sessions" not in run_line
+    assert f"-v {tau_dir.resolve()}/logs" not in run_line
+    assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
+    assert f"-v {tau_dir.resolve()}/trust.json.lock" not in run_line
+    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
 
 
-def test_run_script_skips_missing_config_mounts(tmp_path):
-    """No shared config mounts (fall back to volume-local config) when
-    host ~/.tau or ~/.agents are absent."""
+def test_run_script_skips_missing_host_config_mounts(tmp_path):
+    """Absent host config falls back to volume-local Tau state."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "/home/tau/.tau" not in run_line
-    assert "/home/tau/.agents" not in run_line
+    assert f"{tmp_path.resolve()}/.tau" not in run_line
+    assert f"{tmp_path.resolve()}/.agents" not in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert ":/home/tau/.tau/sessions" in run_line
+    assert ":/home/tau/.tau/logs" in run_line
 
 
 def test_run_script_resources_are_overridable(tmp_path):
@@ -315,14 +339,16 @@ def test_tau_image_override_bypasses_packages(tmp_path):
     assert "custom:tag -- bash" in run_line
 
 
-def test_reset_removes_persistent_volume(tmp_path):
-    """--reset removes tau-persist-<name>-<hash> via msb volume rm."""
+def test_reset_removes_all_project_volumes(tmp_path):
+    """--reset removes home, session, and log volumes together."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("--reset", cwd=tmp_path)
     assert result.returncode == 0
-    assert "Volume tau-persist-" in result.stdout
+    assert "Volumes tau-persist-" in result.stdout
     rm_line = next(line for line in msb_log if "volume rm" in line)
     assert f"msb volume rm tau-persist-{tmp_path.name}-" in rm_line
+    assert f"tau-sessions-{tmp_path.name}-" in rm_line
+    assert f"tau-logs-{tmp_path.name}-" in rm_line
 
 
 def test_shared_base_image_used_without_packages(tmp_path):

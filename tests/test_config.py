@@ -1,9 +1,8 @@
 """Unit tests for config/ files: .bashrc, APPEND_SYSTEM.md, entrypoint.sh.
 
-These tests prove the sandbox configuration files exist, are valid bash,
-and describe/implement the behaviors the sandbox promises: persistent
-user-level install paths, environment reference injection, and the shared
-host config mounted into the sandbox home.
+These tests prove the sandbox configuration files exist and describe or
+implement persistent install paths, isolated state, read-only host resources,
+and invariant environment-reference injection.
 """
 import os
 import pathlib
@@ -54,13 +53,21 @@ def test_append_system_doc_exists():
 
 def test_append_system_doc_describes_filesystem():
     text = _read("APPEND_SYSTEM.md")
-    for path in ("/workspace", "/home/tau", "/home/tau/.tau", "/home/tau/.agents"):
+    for path in (
+        "/workspace",
+        "/home/tau",
+        "/home/tau/.tau",
+        "/home/tau/.tau/sessions",
+        "/home/tau/.tau/logs",
+        "/home/tau/.agents",
+        "/tmp",
+    ):
         assert path in text
 
 
 def test_append_system_doc_describes_ephemeral_rootfs():
     # The microVM rootfs is discarded after every run; the doc must say so.
-    assert "ephemeral" in _read("APPEND_SYSTEM.md")
+    assert "ephemeral" in _read("APPEND_SYSTEM.md").lower()
 
 
 def test_append_system_doc_lists_installed_tools():
@@ -91,28 +98,20 @@ def test_entrypoint_exists_and_executable():
 def test_entrypoint_has_required_directives():
     text = _read("entrypoint.sh")
     assert "set -euo pipefail" in text
-    # Config is shared via mounts, not rsync: the entrypoint must address
-    # the sandbox home config path and must not resurrect the old sync.
     assert 'TAU_DIR="$TAU_HOME/.tau"' in text
     assert "rsync" not in text
     assert "TAU_NO_UPDATE_CHECK" in text
     assert 'exec "$@"' in text
 
 
-def test_entrypoint_describes_shared_config_layout():
-    # run.sh mounts host config into the sandbox home; the entrypoint must
-    # document that layout and not re-introduce a /tau-source rsync path.
+def test_entrypoint_describes_isolated_config_layout():
     text = _read("entrypoint.sh")
-    assert "/home/tau/.tau" in text
+    assert "/home/tau/.tau/credentials.json" in text
+    assert "/home/tau/.tau/sessions" in text
+    assert "/home/tau/.tau/logs" in text
     assert "/home/tau/.agents" in text
     assert "/tau-source" not in text
-
-
-def test_entrypoint_refreshes_append_system():
-    text = _read("entrypoint.sh")
-    assert "APPEND_SYSTEM.md" in text
-    assert "/workspace/config/APPEND_SYSTEM.md" in text
-    assert "/etc/tau-sandbox/APPEND_SYSTEM.md" in text
+    assert "APPEND_SYSTEM.md" not in text
 
 
 def test_entrypoint_sets_persistent_env():
@@ -122,12 +121,19 @@ def test_entrypoint_sets_persistent_env():
     assert "HOME=" in text
 
 
-def test_shell_scripts_pass_syntax_check():
-    """Prove every shell script in the repo parses under bash -n.
+# --- tau-wrapper.py ---
 
-    Catches syntax errors in silent code paths (config mounts absent,
-    env file missing) that only run in production.
-    """
+
+def test_tau_wrapper_injects_immutable_prompt():
+    text = _read("tau-wrapper.py")
+    assert "--append-system-prompt" in text
+    assert "/etc/tau-sandbox/APPEND_SYSTEM.md" in text
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" in text
+    assert "os.fsync" in text
+
+
+def test_scripts_pass_syntax_checks():
+    """Prove shell and Python launcher scripts parse."""
     scripts = [REPO_ROOT / "run.sh", REPO_ROOT / "install.sh", CONFIG_DIR / "entrypoint.sh"]
     for script in scripts:
         result = subprocess.run(
@@ -136,3 +142,10 @@ def test_shell_scripts_pass_syntax_check():
             text=True,
         )
         assert result.returncode == 0, f"{script.name} failed bash -n:\n{result.stderr}"
+
+    result = subprocess.run(
+        ["python", "-m", "py_compile", str(CONFIG_DIR / "tau-wrapper.py")],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

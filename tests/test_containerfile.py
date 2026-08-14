@@ -54,16 +54,19 @@ def test_containerfile_pins_tau_version():
     assert "ARG TAU_VERSION=" in _text()
 
 
-def test_containerfile_has_entrypoint():
+def test_containerfile_has_launchers():
     text = _text()
     assert "COPY config/entrypoint.sh" in text
+    assert "COPY config/tau-wrapper.py /usr/local/bin/tau" in text
     assert 'ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' in text
 
 
-def test_containerfile_has_unprivileged_user():
+def test_containerfile_has_unprivileged_user_and_no_privileged_bits():
     text = _text()
     assert "useradd -m -u 1000 -s /bin/bash tau" in text
     assert "USER tau" in text
+    assert "-perm /6000" in text
+    assert "chmod a-s" in text
 
 
 def test_containerfile_accepts_extra_packages_arg():

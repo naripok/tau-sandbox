@@ -1,11 +1,10 @@
 """Security-focused unit tests for run.sh and config files.
 
 These prove at the configuration level (no KVM required) that the sandbox
-exposes only the declared host paths, mounts shared host config only at the
-sandbox home config paths, never leaks environment variables, and rejects
-dangerous package declarations. Runtime enforcement (mount containment,
-identity virtualization, hardware isolation) is microsandbox's contract,
-covered by integration tests.
+exposes only declared host paths, keeps host resources read-only except for
+credentials, isolates writable Tau state, never leaks ambient environment
+variables, and rejects dangerous package declarations. Runtime enforcement is
+microsandbox's contract and is covered by integration tests.
 """
 import os
 import pathlib
@@ -20,36 +19,59 @@ def _run_line(msb_log):
     return next(line for line in msb_log if line.startswith("msb run"))
 
 
-def test_only_expected_dirs_are_mounted(tmp_path):
-    """The mount allowlist is exactly: workspace, persistent home volume,
-    and (if they exist) the two shared host config dirs mounted into the
-    sandbox home. No other host paths may ride into the VM."""
+def test_only_expected_paths_are_mounted(tmp_path):
+    """The allowlist contains the project, isolated state, immutable prompt,
+    read-only resources, and the credential-file exception only."""
     (tmp_path / ".env").write_text("")
-    (tmp_path / ".tau").mkdir()
+    tau_dir = tmp_path / ".tau"
+    tau_dir.mkdir()
+    (tau_dir / "settings.json").write_text("{}\n")
+    (tau_dir / "credentials.json").write_text("{}\n")
+    (tau_dir / "sessions").mkdir()
+    (tau_dir / "logs").mkdir()
+    (tau_dir / "trust.json").write_text('{"version": 1, "decisions": []}\n')
+    outside = tmp_path / "outside-secret"
+    outside.write_text("secret\n")
+    (tau_dir / "external-link").symlink_to(outside)
     (tmp_path / ".agents").mkdir()
+
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = _run_line(msb_log)
-    # Mount pairs (each -v flag is followed by SOURCE:DEST): workspace,
-    # persistent home volume, and the two shared host config dirs.
-    assert run_line.count(" -v ") == 4
+    assert run_line.count(" -v ") == 8
     assert f"-v {tmp_path.resolve()}:/workspace" in run_line
     assert f"tau-persist-{tmp_path.name}-" in run_line and ":/home/tau" in run_line
-    assert f"-v {tmp_path.resolve()}/.tau:/home/tau/.tau" in run_line
-    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents" in run_line
+    assert f"-v {tau_dir.resolve()}:/home/tau/.tau" not in run_line
+    assert f"-v {tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json" in run_line
+    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
+    assert f"-v {tau_dir.resolve()}/sessions" not in run_line
+    assert f"-v {tau_dir.resolve()}/logs" not in run_line
+    assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
+    assert str(outside.resolve()) not in run_line
+    assert f"-v {tau_dir.resolve()}/external-link" not in run_line
+    assert ":/home/tau/.tau/sessions" in run_line
+    assert ":/home/tau/.tau/logs" in run_line
+    assert "/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro" in run_line
 
 
-def test_host_config_mounts_target_sandbox_home_paths(tmp_path):
-    """Shared config mounts must resolve to exactly the sandbox home
-    config paths, never a stray host path, and carry no :ro (the sandboxed
-    Tau refreshes login tokens in place)."""
+def test_host_config_is_readonly_except_credentials(tmp_path):
+    """Every existing host entry is read-only except credentials.json."""
     (tmp_path / ".env").write_text("")
-    (tmp_path / ".tau").mkdir()
+    tau_dir = tmp_path / ".tau"
+    tau_dir.mkdir()
+    (tau_dir / "settings.json").write_text("{}\n")
+    (tau_dir / "credentials.json").write_text("{}\n")
+
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = _run_line(msb_log)
-    assert "-v " + str(tmp_path.resolve() / ".tau") + ":/home/tau/.tau" in run_line
-    assert ":ro" not in run_line
-    # ~/.agents does not exist here, so no agents mount may be added.
+    assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json:ro" in run_line
+    credential_mount = (
+        f"{tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json"
+    )
+    assert credential_mount in run_line
+    assert credential_mount + ":ro" not in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
     assert "/home/tau/.agents" not in run_line
 
 
@@ -59,6 +81,7 @@ def test_security_profile_and_identity_flags(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = _run_line(msb_log)
     assert "--security restricted" in run_line
+    assert "--tmpfs /tmp" in run_line
     assert "--user 1000:1000" in run_line
 
 

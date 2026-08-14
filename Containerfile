@@ -22,24 +22,28 @@ RUN pacman -Syu --noconfirm && \
 # externally-managed, so system-wide pip installs are rejected.
 ARG TAU_VERSION=0.3.9
 RUN python -m venv /opt/tau && \
-    /opt/tau/bin/pip install --no-cache-dir "tau-ai==${TAU_VERSION}" && \
-    ln -s /opt/tau/bin/tau /usr/local/bin/tau
+    /opt/tau/bin/pip install --no-cache-dir "tau-ai==${TAU_VERSION}"
 
-# Sandbox user. The microMV is booted with --user 1000:1000 and mounts are
+# Sandbox user. The microVM is booted with --user 1000:1000 and mounts are
 # identity-virtualized by microsandbox: writes land on the host as the host
 # user that owns the mounted directory.
 RUN useradd -m -u 1000 -s /bin/bash tau
 
-# Static sandbox files: the agent environment reference and shell config,
-# copied into the persistent volume on first boot by the entrypoint.
+# Static sandbox files: run.sh overlays the current environment reference
+# read-only at runtime; the shell config seeds each persistent home once.
 RUN mkdir -p /etc/tau-sandbox
 COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md
 COPY config/.bashrc /etc/tau-sandbox/.bashrc
 
-# Entrypoint: syncs host config into the volume, sets up the environment,
+# Tau wrapper: always injects the immutable sandbox reference and uses an
+# in-place credential writer for the sole writable host-config file mount.
+COPY config/tau-wrapper.py /usr/local/bin/tau
+
+# Entrypoint: initializes the persistent home, sets up the environment, and
 # then execs the user command.
 COPY config/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 755 /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/tau /usr/local/bin/entrypoint.sh && \
+    find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 
 ENV HOME=/home/tau
 ENV TERM=xterm-256color
