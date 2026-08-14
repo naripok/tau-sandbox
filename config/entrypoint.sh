@@ -12,19 +12,99 @@ set -euo pipefail
 #   /etc/tau-sandbox/bootstrap/tau/<resources>
 #                               host bootstrap sources (ro)
 #   /home/tau/.tau/credentials.json
-#                               shared host credential file (rw exception)
-#   /home/tau/.tau/sessions    isolated per-project volume (rw)
-#   /home/tau/.tau/logs        isolated per-project volume (rw)
+#                               link to shared host credential file (rw exception)
+#   /home/tau/.tau/sessions    link to isolated per-project volume (rw)
+#   /home/tau/.tau/logs        link to isolated per-project volume (rw)
 #   /home/tau/.tau/trust.json  isolated state in the home volume (rw)
 #   /home/tau/.agents          host ~/.agents (ro, when present)
 #
 # The microVM rootfs uses a disposable writable overlay and is discarded after
-# every run. Everything that must survive lives in /workspace or /home/tau.
+# every run. Durable state lives in /workspace, /home/tau, or the persistent
+# session and log mounts linked from the home.
 
 TAU_HOME=/home/tau
 TAU_DIR="$TAU_HOME/.tau"
 
-mkdir -p "$TAU_HOME/.local/bin" "$TAU_DIR" "$TAU_HOME/.agents"
+mkdir -p "$TAU_HOME/.local/bin" "$TAU_HOME/.agents"
+
+# Recover a fresh home initialized by the previous nested-mount layout. In that
+# layout agentd could create ~/.tau as root before this uid-1000 process began.
+# Keep the inaccessible directory for inspection; reset eventually removes it.
+if [ -d "$TAU_DIR" ] && [ ! -w "$TAU_DIR" ]; then
+    LEGACY_TAU_DIR="$TAU_HOME/.tau.msb-root-owned"
+    if [ -e "$LEGACY_TAU_DIR" ]; then
+        echo "Error: both $TAU_DIR and $LEGACY_TAU_DIR are unusable." >&2
+        exit 1
+    fi
+    mv "$TAU_DIR" "$LEGACY_TAU_DIR"
+fi
+mkdir -p "$TAU_DIR"
+
+# Microsandbox prepares nested mount targets as root before starting this
+# unprivileged entrypoint. Keep those mounts outside the persistent home and
+# link them into Tau's expected paths only after ~/.tau exists with uid 1000.
+link_volume_dir() {
+    local backing="$1"
+    local target="$2"
+    local name="${target##*/}"
+    local legacy="$TAU_DIR/.$name.pre-link"
+    if [ -L "$target" ]; then
+        if [ "$(readlink "$target")" != "$backing" ]; then
+            echo "Error: $target points to an unexpected location." >&2
+            exit 1
+        fi
+        return
+    fi
+    if [ -e "$target" ]; then
+        if [ ! -d "$target" ]; then
+            echo "Error: cannot initialize persistent state link $target." >&2
+            exit 1
+        fi
+        if ! rmdir "$target" 2>/dev/null; then
+            if [ -e "$legacy" ]; then
+                echo "Error: both $target and $legacy require migration." >&2
+                exit 1
+            fi
+            mv "$target" "$legacy"
+        fi
+    fi
+    if [ -d "$legacy" ]; then
+        # Older launch layouts could leave real session/log directories under
+        # ~/.tau. Merge their contents without replacing canonical volume data.
+        cp -Rn "$legacy/." "$backing/"
+    fi
+    ln -s "$backing" "$target"
+    if [ -d "$legacy" ]; then
+        rm -rf "$legacy" 2>/dev/null || true
+    fi
+}
+
+link_volume_dir /var/lib/tau-sandbox/sessions "$TAU_DIR/sessions"
+link_volume_dir /var/lib/tau-sandbox/logs "$TAU_DIR/logs"
+
+SHARED_CREDENTIALS=/etc/tau-sandbox/shared/credentials.json
+CREDENTIALS_LINK="$TAU_DIR/credentials.json"
+LOCAL_CREDENTIALS_BACKUP="$TAU_DIR/.sandbox-local-credentials.json"
+if [ "${TAU_SANDBOX_SHARED_CREDENTIALS:-0}" = "1" ]; then
+    if [ -L "$CREDENTIALS_LINK" ]; then
+        if [ "$(readlink "$CREDENTIALS_LINK")" != "$SHARED_CREDENTIALS" ]; then
+            echo "Error: $CREDENTIALS_LINK points to an unexpected location." >&2
+            exit 1
+        fi
+    else
+        if [ -s "$CREDENTIALS_LINK" ] && [ ! -e "$LOCAL_CREDENTIALS_BACKUP" ]; then
+            mv "$CREDENTIALS_LINK" "$LOCAL_CREDENTIALS_BACKUP"
+        else
+            rm -f "$CREDENTIALS_LINK"
+        fi
+        ln -s "$SHARED_CREDENTIALS" "$CREDENTIALS_LINK"
+    fi
+elif [ -L "$CREDENTIALS_LINK" ] && [ "$(readlink "$CREDENTIALS_LINK")" = "$SHARED_CREDENTIALS" ]; then
+    rm "$CREDENTIALS_LINK"
+    if [ -e "$LOCAL_CREDENTIALS_BACKUP" ]; then
+        mv "$LOCAL_CREDENTIALS_BACKUP" "$CREDENTIALS_LINK"
+    fi
+fi
 
 # Seed host Tau defaults into this project's persistent home exactly once.
 # The host entries are mounted at an alternate read-only path so Tau can later

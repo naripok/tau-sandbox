@@ -12,8 +12,10 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/home/tau` | Read-write persistent per-project home for tools, shell state, and other files |
 | `/home/tau/.tau/*` | Writable persistent per-project Tau config, seeded once from host defaults |
 | `/etc/tau-sandbox/bootstrap/tau/*` | Read-only host Tau config sources used only for first-run seeding |
-| `/home/tau/.tau/credentials.json` | Sole writable host-config mount when shared; otherwise project-local |
-| `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Read-write persistent per-project volumes; host history is not mounted |
+| `/home/tau/.tau/credentials.json` | Link to the shared host credential mount when present; otherwise project-local |
+| `/etc/tau-sandbox/shared/credentials.json` | Sole writable host-config mount when shared |
+| `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Links to read-write persistent per-project volumes; host history is not mounted |
+| `/var/lib/tau-sandbox/sessions/`, `/var/lib/tau-sandbox/logs/` | Backing mounts for Tau's session and log links |
 | `/home/tau/.tau/trust.json` | Read-write per-project trust state |
 | `/home/tau/.agents/` | Optional host global resources, mounted read-only |
 | `/tmp` | Read-write tmpfs, discarded after each run |

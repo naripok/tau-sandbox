@@ -184,7 +184,10 @@ fi
 # atomic replacement without modifying the host defaults. credentials.json is
 # the sole host write exception. Sessions, logs, and trust state stay
 # per-project; the Tau wrapper makes OAuth writes safe for a mounted credential
-# file. Host history and trust decisions are never exposed or modified.
+# file. Session, log, and credential mounts use backing paths outside the home
+# so microsandbox's root-owned mountpoint setup cannot create an unwritable
+# ~/.tau before the unprivileged entrypoint runs. Host history and trust
+# decisions are never exposed or modified.
 MOUNT_ARGS=(
     -v "$(pwd):/workspace"
     -v "$PERSIST_VOLUME:/home/tau"
@@ -207,15 +210,15 @@ if [ -d "$CONFIG_DIR" ]; then
     shopt -u dotglob nullglob
 fi
 if [ -f "$CONFIG_DIR/credentials.json" ] && [ ! -L "$CONFIG_DIR/credentials.json" ]; then
-    MOUNT_ARGS+=(-v "$CONFIG_DIR/credentials.json:/home/tau/.tau/credentials.json")
+    MOUNT_ARGS+=(-v "$CONFIG_DIR/credentials.json:/etc/tau-sandbox/shared/credentials.json")
     ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=1")
 else
     ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=0")
 fi
 [ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents:ro")
 MOUNT_ARGS+=(
-    -v "$SESSIONS_VOLUME:/home/tau/.tau/sessions"
-    -v "$LOGS_VOLUME:/home/tau/.tau/logs"
+    -v "$SESSIONS_VOLUME:/var/lib/tau-sandbox/sessions"
+    -v "$LOGS_VOLUME:/var/lib/tau-sandbox/logs"
     -v "$SCRIPT_DIR/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro"
 )
 

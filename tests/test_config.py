@@ -103,6 +103,10 @@ def test_entrypoint_has_required_directives():
     assert ".host-config-bootstrapped" in text
     assert "cp -a" in text
     assert "chmod -R u+w" in text
+    assert ".tau.msb-root-owned" in text
+    assert "link_volume_dir /var/lib/tau-sandbox/sessions" in text
+    assert "link_volume_dir /var/lib/tau-sandbox/logs" in text
+    assert 'cp -Rn "$legacy/." "$backing/"' in text
     assert "TAU_NO_UPDATE_CHECK" in text
     assert 'exec "$@"' in text
 
@@ -113,6 +117,9 @@ def test_entrypoint_describes_isolated_config_layout():
     assert "/home/tau/.tau/credentials.json" in text
     assert "/home/tau/.tau/sessions" in text
     assert "/home/tau/.tau/logs" in text
+    assert "/var/lib/tau-sandbox/sessions" in text
+    assert "/var/lib/tau-sandbox/logs" in text
+    assert "/etc/tau-sandbox/shared/credentials.json" in text
     assert "/home/tau/.agents" in text
     assert "/tau-source" not in text
     assert "APPEND_SYSTEM.md" not in text

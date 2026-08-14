@@ -131,6 +131,37 @@ class TestPersistence:
         assert result.returncode == 0
         assert result.stdout.strip() == "keep"
 
+    def test_nonempty_legacy_state_directory_is_migrated(self, tmp_path, sandbox_home):
+        """Existing homes may contain real session directories from the old mount layout."""
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "echo canonical > /var/lib/tau-sandbox/sessions/collision && "
+                "rm /home/tau/.tau/sessions && "
+                "mkdir /home/tau/.tau/sessions && "
+                "echo legacy > /home/tau/.tau/sessions/legacy-session && "
+                "echo stale > /home/tau/.tau/sessions/collision",
+            ],
+        )
+        assert result.returncode == 0, result.stderr
+
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "test -L /home/tau/.tau/sessions && "
+                "cat /home/tau/.tau/sessions/legacy-session && "
+                "cat /home/tau/.tau/sessions/collision",
+            ],
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["legacy", "canonical"]
+
     def test_rootfs_is_ephemeral(self, tmp_path, sandbox_home):
         """Rootfs writes vanish on the next run; /home/tau writes survive.
 
@@ -182,7 +213,14 @@ class TestHostConfigIsolation:
             '{"openrouter": "sk-fake-token"}\n'
         )
         result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/credentials.json"]
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "test -L /home/tau/.tau/credentials.json && "
+                "cat /home/tau/.tau/credentials.json",
+            ],
         )
         assert result.returncode == 0
         assert "sk-fake-token" in result.stdout
@@ -216,6 +254,9 @@ class TestHostConfigIsolation:
             [
                 "sh",
                 "-c",
+                "test -w /home/tau/.tau && "
+                "test -L /home/tau/.tau/sessions && "
+                "test -L /home/tau/.tau/logs && "
                 "test -f /home/tau/.tau/skills/hello.md && "
                 "cat /home/tau/.tau/settings.json && "
                 "printf '{\"sandbox\": true}\\n' > /home/tau/.tau/settings.json",

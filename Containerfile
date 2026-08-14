@@ -32,7 +32,9 @@ RUN useradd -m -u 1000 -s /bin/bash tau
 # Static sandbox files: run.sh overlays the current environment reference and
 # host-config bootstrap sources read-only at runtime; the entrypoint seeds each
 # persistent home once.
-RUN mkdir -p /etc/tau-sandbox/bootstrap/tau
+RUN mkdir -p /etc/tau-sandbox/bootstrap/tau /etc/tau-sandbox/shared \
+      /var/lib/tau-sandbox/sessions /var/lib/tau-sandbox/logs && \
+    chown -R tau:tau /var/lib/tau-sandbox
 COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md
 COPY config/.bashrc /etc/tau-sandbox/.bashrc
 

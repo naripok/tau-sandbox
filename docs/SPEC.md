@@ -11,8 +11,8 @@ Defines the behavioral requirements for the Tau coding agent sandbox: a per-proj
 For a project at resolved path `<path>`, `run.sh` SHALL use the first eight hexadecimal characters of the SHA-256 of `<path>` (including the shell `echo` newline) and the project basename to derive:
 
 - `tau-persist-<basename>-<hash>` mounted at `/home/tau`
-- `tau-sessions-<basename>-<hash>` mounted at `/home/tau/.tau/sessions`
-- `tau-logs-<basename>-<hash>` mounted at `/home/tau/.tau/logs`
+- `tau-sessions-<basename>-<hash>` mounted at `/var/lib/tau-sandbox/sessions` and linked from `/home/tau/.tau/sessions`
+- `tau-logs-<basename>-<hash>` mounted at `/var/lib/tau-sandbox/logs` and linked from `/home/tau/.tau/logs`
 
 #### Scenario: State survives separate runs
 
@@ -52,11 +52,20 @@ When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be 
 
 - Host `sessions` and `logs` SHALL NOT be mounted.
 - Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
-- The isolated named volumes SHALL occupy their normal Tau paths.
-- When host `credentials.json` exists, it SHALL be mounted read-write at `/home/tau/.tau/credentials.json`.
+- The isolated session and log volumes SHALL be mounted under `/var/lib/tau-sandbox/` and linked from their normal Tau paths.
+- When host `credentials.json` exists, it SHALL be mounted read-write at `/etc/tau-sandbox/shared/credentials.json` and linked from `/home/tau/.tau/credentials.json`.
 - The host config directory itself SHALL NOT be mounted read-write.
 
+Microsandbox SHALL NOT receive nested mount targets under `/home/tau/.tau`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable Tau directory first and link the external credential, session, and log backing paths into it. A root-owned Tau directory left by the earlier nested-mount layout SHALL be moved aside automatically. Non-empty real session or log directories from that layout SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
+
 On the first start of a project's persistent home, the entrypoint SHALL copy each mounted bootstrap entry into `/home/tau/.tau/<name>` unless a local entry already exists, then create a persistent bootstrap marker. Later starts SHALL NOT copy bootstrap entries again. This gives Tau writable project-local settings, providers, catalogs, prompts, skills, themes, extensions, and other resources while preserving host defaults. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
+
+#### Scenario: Fresh Tau home remains writable
+
+- GIVEN microsandbox is starting a new project with empty persistent volumes
+- WHEN it prepares credential, session, and log mounts before launching UID 1000
+- THEN none of those mount targets SHALL create `/home/tau/.tau`
+- AND the entrypoint SHALL create a writable Tau directory and normal-path links
 
 #### Scenario: Host resource seeds writable project state
 

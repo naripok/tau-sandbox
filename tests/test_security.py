@@ -47,15 +47,21 @@ def test_only_expected_paths_are_mounted(tmp_path):
         "/etc/tau-sandbox/bootstrap/tau/settings.json:ro"
     ) in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
-    assert f"-v {tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json" in run_line
+    assert (
+        f"-v {tau_dir.resolve()}/credentials.json:"
+        "/etc/tau-sandbox/shared/credentials.json"
+    ) in run_line
+    assert f"{tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json" not in run_line
     assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
     assert f"-v {tau_dir.resolve()}/sessions" not in run_line
     assert f"-v {tau_dir.resolve()}/logs" not in run_line
     assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
     assert str(outside.resolve()) not in run_line
     assert f"-v {tau_dir.resolve()}/external-link" not in run_line
-    assert ":/home/tau/.tau/sessions" in run_line
-    assert ":/home/tau/.tau/logs" in run_line
+    assert ":/var/lib/tau-sandbox/sessions" in run_line
+    assert ":/var/lib/tau-sandbox/logs" in run_line
+    assert ":/home/tau/.tau/sessions" not in run_line
+    assert ":/home/tau/.tau/logs" not in run_line
     assert "/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro" in run_line
 
 
@@ -75,7 +81,8 @@ def test_host_config_is_bootstrap_only_except_credentials(tmp_path):
     ) in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     credential_mount = (
-        f"{tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json"
+        f"{tau_dir.resolve()}/credentials.json:"
+        "/etc/tau-sandbox/shared/credentials.json"
     )
     assert credential_mount in run_line
     assert credential_mount + ":ro" not in run_line

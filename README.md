@@ -71,11 +71,12 @@ Host                              Sandbox (microVM)
 ~/.tau/*                 ───────► /etc/tau-sandbox/bootstrap/tau/* (read-only)
                                       │ first project run
                                       ▼
-msb home volume          ───────► /home/tau/.tau/*           (read-write copy)
-~/.tau/credentials.json  ───────► ~/.tau/credentials.json    (read-write exception)
+msb home volume          ───────► /home/tau                  (includes rw .tau copy)
+~/.tau/credentials.json  ───────► /etc/tau-sandbox/shared/credentials.json (rw)
+                                      ▲ linked from ~/.tau/credentials.json
 ~/.agents/               ───────► /home/tau/.agents          (read-only, optional)
-msb sessions volume      ───────► ~/.tau/sessions            (read-write, isolated)
-msb logs volume          ───────► ~/.tau/logs                (read-write, isolated)
+msb sessions volume      ───────► /var/lib/tau-sandbox/sessions (linked from ~/.tau)
+msb logs volume          ───────► /var/lib/tau-sandbox/logs  (linked from ~/.tau)
 (home volume state)      ───────► ~/.tau/trust.json          (read-write, isolated)
 
 podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
@@ -151,9 +152,12 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 | `/workspace`                        | Current directory                | Read-write  |
 | `/home/tau/.tau/*`                  | Per-project home volume          | Read-write  |
 | `/etc/tau-sandbox/bootstrap/tau/*`  | Existing host `~/.tau` entries   | Read-only   |
-| `/home/tau/.tau/credentials.json`   | Host login tokens, when present  | Read-write  |
-| `/home/tau/.tau/sessions/`          | Per-project sessions volume      | Read-write  |
-| `/home/tau/.tau/logs/`              | Per-project logs volume          | Read-write  |
+| `/home/tau/.tau/credentials.json`   | Link to shared tokens, or local  | Read-write  |
+| `/etc/tau-sandbox/shared/credentials.json` | Host login tokens, when present | Read-write |
+| `/home/tau/.tau/sessions/`          | Link to per-project volume       | Read-write  |
+| `/home/tau/.tau/logs/`              | Link to per-project volume       | Read-write  |
+| `/var/lib/tau-sandbox/sessions/`    | Sessions volume backing path     | Read-write  |
+| `/var/lib/tau-sandbox/logs/`        | Logs volume backing path         | Read-write  |
 | `/home/tau/.tau/trust.json`         | Per-project home volume          | Read-write  |
 | `/home/tau/.agents/`                | Host `~/.agents/` (if present)   | Read-only   |
 | `/home/tau`                         | Per-project home volume          | Read-write  |
@@ -167,6 +171,8 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 This separate source and destination layout is required for Tau's atomic config writes. Tau writes a sibling temporary file and renames it over files such as `providers.json`; a file bind mount is itself a mount point and Linux rejects replacement with `EBUSY`. The project-local copy is on one writable filesystem, so atomic replacement works and model, provider, scoped-model, and thinking-effort changes persist normally.
 
 `credentials.json` is mounted read-write as a deliberate exception. Tau normally updates credentials by atomically replacing the file, which file mounts cannot support, so the sandbox wrapper uses a bind-mount-safe in-place writer only when shared credentials are mounted. If the host credential file is absent, Tau can create project-local credentials in the persistent home instead.
+
+Microsandbox creates nested mount targets as root before launching the configured user. To keep a new persistent `~/.tau` owned by UID 1000, shared credentials and the isolated session/log volumes are mounted at backing paths outside `/home/tau`; the entrypoint creates links at Tau's normal paths. This prevents mount setup from creating an unwritable `~/.tau` before first-run bootstrapping. Existing non-empty session or log directories from the earlier layout are merged into the named volumes without overwriting canonical volume data.
 
 Host sessions and logs are excluded and replaced by per-project named volumes. Trust-store files live in the per-project home because Tau needs a writable lock and atomic updates, and host trust paths would not match the guest's canonical `/workspace` path. `~/.agents` remains mounted read-only.
 
