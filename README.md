@@ -205,7 +205,7 @@ This removes the project's home, session, and log volumes: installed tools, isol
 ## Testing
 
 ```bash
-pytest tests/
+uv run pytest tests/
 ```
 
 The test suite covers:
