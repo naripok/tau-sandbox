@@ -21,7 +21,7 @@ RUN pacman -Syu --noconfirm && \
 # rebuild the image (make build) to update Tau or system packages.
 # Installed into a dedicated venv: Arch's python-pip is PEP 668
 # externally-managed, so system-wide pip installs are rejected.
-ARG TAU_REF=339bc8341bd412263ebbe1a0390c3c93369bd00f
+ARG TAU_REF=eb04f872e1bc27c4efbc52ba95cc0b33ead81368
 RUN python -m venv /opt/tau && \
     /opt/tau/bin/pip install --no-cache-dir "git+https://github.com/naripok/tau@${TAU_REF}"
 
