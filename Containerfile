@@ -16,13 +16,14 @@ RUN pacman -Syu --noconfirm && \
       exit 1; } && \
     pacman -Scc --noconfirm
 
-# Pinned Tau release. The sandbox image is the upgrade vehicle:
+# Tau pinned to a commit of the naripok/tau fork (currently the 0.3.10
+# release). The sandbox image is the upgrade vehicle:
 # rebuild the image (make build) to update Tau or system packages.
 # Installed into a dedicated venv: Arch's python-pip is PEP 668
 # externally-managed, so system-wide pip installs are rejected.
-ARG TAU_VERSION=0.3.9
+ARG TAU_REF=339bc8341bd412263ebbe1a0390c3c93369bd00f
 RUN python -m venv /opt/tau && \
-    /opt/tau/bin/pip install --no-cache-dir "tau-ai==${TAU_VERSION}"
+    /opt/tau/bin/pip install --no-cache-dir "git+https://github.com/naripok/tau@${TAU_REF}"
 
 # Sandbox user. The microVM is booted with --user 1000:1000 and mounts are
 # identity-virtualized by microsandbox: writes land on the host as the host

@@ -46,12 +46,12 @@ def test_containerfile_has_required_tool_packages():
 
 
 def test_containerfile_installs_tau():
-    assert "tau-ai" in _text()
+    assert "github.com/naripok/tau" in _text()
 
 
-def test_containerfile_pins_tau_version():
+def test_containerfile_pins_tau_ref():
     # The image is the upgrade vehicle; builds must be deterministic.
-    assert "ARG TAU_VERSION=" in _text()
+    assert "ARG TAU_REF=" in _text()
 
 
 def test_containerfile_has_launchers():
