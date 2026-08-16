@@ -20,7 +20,7 @@
 
 | File | Responsibility | Change |
 | --- | --- | --- |
-| `run.sh` | Launcher: image resolution, build, prune | Add `compute_base_hash`, `prune_superseded_package_images`; extend tag naming; update header comment |
+| `run.sh` | Launcher: image resolution, build, prune | Add `compute_base_hash`, `prune_superseded_package_images`; extend tag naming; update resolution-block comment |
 | `tests/test_run.py` | Black-box tests with fake `msb`/`podman` | Refactor invokers; new harness helpers; new + updated tests |
 | `docs/SPEC.md` | Living spec | Splice modified package-declarations requirement + add pruning requirement |
 | `README.md` | User docs | `.tau-packages` section: naming rule, base-update flow, pruning |
@@ -292,6 +292,15 @@ def test_added_base_input_changes_tag(tmp_path):
     assert _base_hash(base_repo) in tag_a
     assert _base_hash(extra_repo) in tag_b
     assert _base_hash(base_repo) != _base_hash(extra_repo)
+    # Content-change branch: rewriting an existing input's bytes (not just
+    # the file set) must also change the tag.
+    content_file = base_repo / "config" / "APPEND_SYSTEM.md"
+    content_file.write_bytes(content_file.read_bytes() + b"\n# base update\n")
+    rc_d, _, msb_d, _ = invoke_run_tty(cwd=project, script=base_repo / "run.sh", answer="y\n")
+    assert rc_d == 0
+    tag_d = tag(msb_d)
+    assert tag_d != tag_a
+    assert _base_hash(base_repo) in tag_d
 ```
 
 - [ ] **Step 3: Run the new tests to verify they fail**
@@ -499,7 +508,7 @@ def test_prune_rmi_failure_does_not_fail_launch(tmp_path):
 - [ ] **Step 2: Run the new tests to verify they fail**
 
 Run: `env -u TAU_LAN_HOSTS ./.venv/bin/python -m pytest tests/test_run.py -q -k "stale_package or prune_rmi" -v`
-Expected: `test_stale_package_image_rebuilds_and_prunes_superseded` FAILS (no prune exists: no rmi lines; the run line also boots the legacy name). The other two pass already as guards — `test_stale_package_image_refuses_non_interactively` pins the gate across stale states, `test_prune_rmi_failure_does_not_fail_launch` pins the tolerance contract that the prune implementation must keep.
+Expected: `test_stale_package_image_rebuilds_and_prunes_superseded` FAILS only on the exact rmi-set assertion (no prune exists yet, so the actual rmi lines are `set()`; the run-line assertion already passes — Task 2's two-hash naming is live). The other two pass already as guards — `test_stale_package_image_refuses_non_interactively` pins the gate across stale states, `test_prune_rmi_failure_does_not_fail_launch` pins the tolerance contract that the prune implementation must keep.
 
 - [ ] **Step 3: Implement the prune function and call it**
 
@@ -526,7 +535,7 @@ prune_superseded_package_images() {
 }
 ```
 
-Note the case patterns must stay unquoted so the `$hex8` character class and the hash variables are re-interpreted as patterns; `PROJECT_NAME` and `PKG_HASH` contain only `[a-zA-Z0-9._-]`, so no glob metacharacters enter the pattern.
+Note the case patterns must stay unquoted so the `$hex8` character class and the hash variables are re-interpreted as patterns; `PKG_HASH` is hex, and `PROJECT_NAME` is assumed free of glob metacharacters (`[`, `*`, `?`) — a pathological basename containing them would make the patterns fail to match and skip pruning (no data loss; the pre-existing `grep -qx "$IMAGE_REF"` existence check has the same exposure).
 
 The `[ "$cached_ref" = "$IMAGE_REF" ] && continue` guard (spec: "SHALL NOT remove the image it just loaded") is not directly exercised by these tests — the fake msb's image listing is static and never shows the freshly loaded tag. It is defense-in-depth for real caches, where the fresh tag legitimately matches the two-hash pattern; keep it.
 
