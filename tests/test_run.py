@@ -477,6 +477,65 @@ def test_added_base_input_changes_tag(tmp_path):
     assert _base_hash(base_repo) in tag_d
 
 
+def test_stale_package_image_rebuilds_and_prunes_superseded(tmp_path):
+    """A base change invalidates the per-project tag: the cached legacy and
+    superseded images of the current package content are replaced after
+    approval, and pruned afterwards, while images with other package hashes
+    (same-basename sibling, earlier content) remain untouched."""
+    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".env").write_text("")
+    pkg_hash = hashlib.sha256((tmp_path / ".tau-packages").read_bytes()).hexdigest()[:8]
+    name = tmp_path.name
+    legacy_current = f"localhost/tau-agent-isolated-{name}-{pkg_hash}:latest"
+    stale_base = f"localhost/tau-agent-isolated-{name}-00000000-{pkg_hash}:latest"
+    sibling = f"localhost/tau-agent-isolated-{name}-deadbeef-ffffffff:latest"
+    legacy_other = f"localhost/tau-agent-isolated-{name}-ffffffff:latest"
+
+    rc, output, msb_log, podman_log = invoke_run_tty(
+        cwd=tmp_path, answer="y\n",
+        images=(legacy_current, stale_base, sibling, legacy_other),
+    )
+    assert rc == 0, f"output: {output}"
+    assert "Approve?" in output
+    current = f"localhost/tau-agent-isolated-{name}-{_base_hash()}-{pkg_hash}:latest"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"{current} -- bash" in run_line
+    build_line = next(line for line in podman_log if line.startswith("podman build"))
+    # podman build tags the host image without localhost/ and without :latest.
+    assert current.removeprefix("localhost/").removesuffix(":latest") in build_line
+    rmi_lines = {line for line in msb_log if line.startswith("msb rmi")}
+    assert rmi_lines == {f"msb rmi {legacy_current}", f"msb rmi {stale_base}"}
+
+
+def test_stale_package_image_refuses_non_interactively(tmp_path):
+    """A base-change rebuild keeps the approval gate: with only a stale tag
+    in the cache and no terminal, the launch fails without building."""
+    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".env").write_text("")
+    stale = f"localhost/tau-agent-isolated-{tmp_path.name}-00000000:latest"
+    result, _, podman_log = invoke_run("bash", cwd=tmp_path, images=(stale,))
+    assert result.returncode == 1
+    assert "not a terminal" in result.stderr
+    assert not podman_log
+
+
+def test_prune_rmi_failure_does_not_fail_launch(tmp_path):
+    """A failed msb rmi during pruning must never fail the build, load, or
+    launch, and must not be reported as an error: pruning is cache hygiene,
+    not a launch blocker."""
+    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".env").write_text("")
+    pkg_hash = hashlib.sha256((tmp_path / ".tau-packages").read_bytes()).hexdigest()[:8]
+    stale = f"localhost/tau-agent-isolated-{tmp_path.name}-00000000-{pkg_hash}:latest"
+    rc, output, _, podman_log = invoke_run_tty(
+        cwd=tmp_path, answer="y\n", images=(stale,), env={"MSB_RMI_FAIL": "1"},
+    )
+    assert rc == 0, f"output: {output}"
+    # run.sh silences msb rmi output; nothing may leak into the session.
+    assert "Error" not in output
+    assert any(line.startswith("podman build") for line in podman_log)
+
+
 def test_shared_base_launch_ignores_missing_base_inputs(tmp_path):
     """Projects without a non-empty .tau-packages file never derive a
     package tag, so a missing Containerfile must not abort them: they boot

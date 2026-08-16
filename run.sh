@@ -115,6 +115,25 @@ compute_base_hash() {
     } | awk '{ printf "%s", $1 }' | sha256sum | cut -c1-8
 }
 
+prune_superseded_package_images() {
+    # Cache hygiene after a package-image build: remove the images this build
+    # supersedes — the legacy single-hash tag of the current package content
+    # and any older base version of it. Images tagged with any other package
+    # hash (same-basename projects, earlier .tau-packages contents) are never
+    # removed. Failed removals are tolerated: pruning never blocks the launch.
+    local hex8='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+    local cached_ref
+    while IFS= read -r cached_ref; do
+        case "$cached_ref" in
+            localhost/tau-agent-isolated-${PROJECT_NAME}-${PKG_HASH}:latest | \
+            localhost/tau-agent-isolated-${PROJECT_NAME}-${hex8}-${PKG_HASH}:latest)
+                [ "$cached_ref" = "$IMAGE_REF" ] && continue
+                msb rmi "$cached_ref" >/dev/null 2>&1 || true
+                ;;
+        esac
+    done < <(msb images -q)
+}
+
 # Image reference resolution.
 # TAU_IMAGE overrides everything: the reference is passed to msb verbatim
 # and image management (build/load) is skipped entirely — the user manages
@@ -175,6 +194,9 @@ if [ "${SKIP_IMAGE_CHECK:-0}" != "1" ] && ! msb images -q | grep -qx "$IMAGE_REF
         podman build -t "$IMAGE_NAME" "$SCRIPT_DIR"
     fi
     podman save "$IMAGE_NAME" | msb load
+    if [ "$HAS_PACKAGES" -eq 1 ]; then
+        prune_superseded_package_images
+    fi
 fi
 
 # --- Environment forwarding ---
