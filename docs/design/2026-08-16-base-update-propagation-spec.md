@@ -24,9 +24,11 @@ A non-empty `.tau-packages` file SHALL select image
   does. Non-regular entries under `config/` SHALL be ignored.
 
 The launcher SHALL require interactive approval before building a missing
-package-specific image. If the repository `Containerfile` or the `config/`
-directory is missing, the launcher SHALL abort with an error rather than
-derive a tag whose freshness cannot be verified against the current inputs.
+package-specific image. When the launcher would otherwise derive a package
+image tag (a non-empty `.tau-packages` file is present and no `TAU_IMAGE`
+override is set), a missing repository `Containerfile` or `config/` directory
+SHALL abort the launch with an error rather than derive a tag whose freshness
+cannot be verified against the current inputs.
 
 ##### Scenario: Base input change invalidates the package image
 
@@ -52,12 +54,22 @@ derive a tag whose freshness cannot be verified against the current inputs.
 - WHEN the project launches
 - THEN the launcher SHALL fail without building
 
-##### Scenario: Missing base inputs abort the launch
+##### Scenario: Missing base inputs abort a package-tag launch
 
-- GIVEN the repository `Containerfile` or the `config/` directory is missing
+- GIVEN the project has a non-empty `.tau-packages` file and no `TAU_IMAGE`
+  override, and the repository `Containerfile` or the `config/` directory is
+  missing
 - WHEN the project launches
 - THEN the launcher SHALL abort with an error and SHALL NOT build or boot an
   image
+
+##### Scenario: Missing base inputs do not affect other launches
+
+- GIVEN the repository `Containerfile` or the `config/` directory is missing
+- WHEN a project without a non-empty `.tau-packages` file, or with a
+  `TAU_IMAGE` override, launches
+- THEN the launcher SHALL proceed with the shared base image or the override
+  and SHALL NOT abort
 
 ##### Scenario: Non-file config entries do not affect the hash
 
@@ -66,6 +78,14 @@ derive a tag whose freshness cannot be verified against the current inputs.
 - WHEN the project launches
 - THEN the launcher SHALL select the same tag as it would without the directory
 - AND it SHALL boot the cached image without building
+
+##### Scenario: Added or removed base input changes the tag
+
+- GIVEN a package image was tagged from a base-input set without a particular
+  regular file under `config/`
+- WHEN that file is added to `config/` without changing any other input
+- THEN the launcher SHALL select a different image tag than the previously
+  built one
 
 ### ADDED Requirements
 
@@ -82,9 +102,17 @@ reported as an error.
 ##### Scenario: Base-triggered rebuild removes the superseded image
 
 - GIVEN the cache contains a package image whose tag derives from an older base
-  hash
+  hash (two-hash form)
 - WHEN the launcher rebuilds the package image for the changed base
 - THEN the old image SHALL be removed from the cache
+- AND the newly built image SHALL remain
+
+##### Scenario: Legacy single-hash image is pruned
+
+- GIVEN the cache contains a package image tagged in the legacy single-hash
+  form for the same project
+- WHEN the launcher rebuilds the package image
+- THEN the legacy image SHALL be removed from the cache
 - AND the newly built image SHALL remain
 
 ##### Scenario: Fresh build with an empty cache succeeds
