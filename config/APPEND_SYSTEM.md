@@ -44,7 +44,7 @@ For system packages unavailable through pip, uv, or npm:
 1. Create `.tau-packages` in the project root, with one Arch Linux package per line (`#` starts a comment).
 2. Tell the user: "I've updated `.tau-packages`. Re-enter the sandbox to approve and rebuild."
 
-The next run requires user approval before building the package-specific image.
+The next run requires user approval before building the package-specific image. The same approval applies when the sandbox base changes (e.g. a Tau upgrade): the per-project image tag embeds the base inputs, so base updates invalidate it and the next interactive start rebuilds with approval.
 
 ## Network and resources
 

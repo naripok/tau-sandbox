@@ -19,6 +19,9 @@ RUN pacman -Syu --noconfirm && \
 # Tau pinned to a commit of the naripok/tau fork (currently the 0.3.10
 # release). The sandbox image is the upgrade vehicle:
 # rebuild the image (make build) to update Tau or system packages.
+# Per-project package images embed a hash of this file and config/;
+# changing either invalidates them and triggers an approval-gated rebuild
+# on the project's next run.
 # Installed into a dedicated venv: Arch's python-pip is PEP 668
 # externally-managed, so system-wide pip installs are rejected.
 ARG TAU_REF=bc2d5a18d4af5259cf0db8e81d0936a92016d01f

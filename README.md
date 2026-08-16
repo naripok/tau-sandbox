@@ -54,11 +54,11 @@ libffi
 1. Create `.tau-packages` in your project root (one Arch package per line, `#` for comments).
 2. On the next `tau-sandbox` run, the script detects the file and prompts you to approve the packages.
 3. On approval, a per-project image is built with those packages installed and loaded into the microsandbox cache.
-4. The image name includes a hash of `.tau-packages`, so changes trigger a new approval.
+4. The image name includes hashes of `.tau-packages` and of the sandbox base inputs (`Containerfile` and `config/`), so package or base changes (e.g. Tau upgrades) trigger a new approval and rebuild.
 
 Projects without `.tau-packages` use the shared base image — zero overhead.
 
-**Security:** Every change to `.tau-packages` requires explicit user approval before the image is rebuilt. The agent can write `.tau-packages` but cannot bypass the approval gate. Non-interactive mode (pipes, CI) refuses to rebuild without approval.
+**Security:** Every change to `.tau-packages` requires explicit user approval before the image is rebuilt. The agent can write `.tau-packages` but cannot bypass the approval gate. Non-interactive mode (pipes, CI) refuses to rebuild without approval. The same gate covers base updates: per-project images embed a hash of the base inputs, so rebuilding the sandbox base invalidates them and the next interactive run asks for approval again. Rebuilds prune superseded images of the current package content from the microsandbox cache; images of other package contents (same-basename projects, earlier `.tau-packages` contents) are kept.
 
 **Override:** Set `TAU_IMAGE=my-image-ref` to bypass `.tau-packages` and automatic image management entirely and use a specific image (load it yourself, e.g. `make build`).
 
