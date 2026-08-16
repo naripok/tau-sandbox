@@ -10,7 +10,8 @@ Delta against `docs/SPEC.md`.
 
 <!-- Replaces the image-name rule. The package hash rule is unchanged.
 When splicing into SPEC.md, retain the living "Non-interactive rebuild is
-refused" scenario alongside the scenarios below, then strip this comment. -->
+refused" scenario alongside the scenarios below, then strip this comment and
+the "(unchanged from the living spec)" parenthetical below. -->
 
 For this requirement, a `.tau-packages` file is non-empty when it declares at
 least one package name after stripping comments, blank lines, and surrounding
@@ -49,7 +50,9 @@ cannot be verified against the current inputs.
 - GIVEN the package image tag derived from the current build context exists in
   the microsandbox cache
 - WHEN the project launches and stdin is not a terminal
-- THEN the launcher SHALL NOT build anything and SHALL boot the cached image
+- THEN the launcher SHALL NOT build anything
+- AND the launcher SHALL NOT remove any image from the cache
+- AND the launcher SHALL boot the cached image
 
 ##### Scenario: Non-interactive base-triggered rebuild is refused
 
@@ -103,19 +106,24 @@ cannot be verified against the current inputs.
 
 #### Requirement: Superseded package images are pruned
 
-Package image tags are keyed by basename and package hash, so same-basename
-projects share one tag namespace: projects with identical base inputs and
-identical `.tau-packages` content use the same tag, while different package
-contents produce different tags under the same basename prefix.
+Package image tags are keyed by basename, base hash, and package hash, so
+same-basename projects share one tag namespace: projects with identical base
+inputs and identical `.tau-packages` content use the same tag, while different
+package contents produce different tags under the same basename prefix.
 
 When the launcher builds a package-specific image, it SHALL remove from the
 microsandbox cache every other image whose reference is
-`localhost/tau-agent-isolated-<basename>-<8 hex>:latest` (legacy single-hash
-form) or `localhost/tau-agent-isolated-<basename>-<8 hex>-<package-hash>:latest`
-— any base version of this project's current package content. It SHALL NOT
-remove the image it just loaded. Images tagged with any other package hash —
-including those of same-basename projects with different `.tau-packages`
-content and those of earlier package contents of this project — SHALL NOT be
+`localhost/tau-agent-isolated-<basename>-<package-hash>:latest` (legacy
+single-hash form of the current package content) or
+`localhost/tau-agent-isolated-<basename>-<8 hex>-<package-hash>:latest` (any
+base version of the current package content). It SHALL NOT remove the image it
+just loaded. Inherent to the shared tag namespace, an image carrying the
+current package hash at another base hash is removed whether this project or a
+same-basename project with identical `.tau-packages` content produced it.
+Images tagged with any other package hash — including those of same-basename
+projects with different `.tau-packages` content and those of earlier package
+contents of this project — SHALL NOT be removed; in particular, a legacy
+single-hash tag whose hash differs from the current package hash SHALL NOT be
 removed. A failed removal SHALL NOT fail the build, the load, or the launch,
 and SHALL NOT be reported as an error.
 
@@ -134,6 +142,13 @@ and SHALL NOT be reported as an error.
 - WHEN the launcher rebuilds the package image
 - THEN the legacy image SHALL be removed from the cache
 - AND the newly built image SHALL remain
+
+##### Scenario: Legacy tag of another content is kept
+
+- GIVEN the cache contains a package image tagged in the legacy single-hash
+  form whose hash differs from the current package hash
+- WHEN the launcher rebuilds the package image
+- THEN that image SHALL remain in the cache
 
 ##### Scenario: Same-basename projects keep their package images
 
