@@ -16,15 +16,17 @@ A non-empty `.tau-packages` file SHALL select image
 - `<package-hash>` is derived from the raw bytes of `.tau-packages` (unchanged
   from the living spec);
 - `<base-hash>` is the first eight hexadecimal characters of the SHA-256 of the
-  SHA-256 digests of the image build-context files — the repository
-  `Containerfile` and every file directly under `config/` — concatenated in the
-  filesystem sort order of their paths. It SHALL change when the content of any
-  of those files changes and SHALL be stable when none does.
+  text formed by concatenating, in lexicographic path order, the hex-encoded
+  SHA-256 digests (64 lowercase hex characters, no separators) of the raw bytes
+  of each regular file directly under `config/`, preceded by the digest of the
+  repository `Containerfile`. It SHALL change when the content, or the set, of
+  those files changes (a file added or removed) and SHALL be stable when none
+  does. Non-regular entries under `config/` SHALL be ignored.
 
 The launcher SHALL require interactive approval before building a missing
-package-specific image. If the base-hash inputs cannot be computed (a file is
-missing or `config/` contains a non-file entry), the launcher SHALL abort with an
-error rather than launch with an image whose freshness cannot be determined.
+package-specific image. If the repository `Containerfile` or the `config/`
+directory is missing, the launcher SHALL abort with an error rather than
+derive a tag whose freshness cannot be verified against the current inputs.
 
 ##### Scenario: Base input change invalidates the package image
 
@@ -50,12 +52,20 @@ error rather than launch with an image whose freshness cannot be determined.
 - WHEN the project launches
 - THEN the launcher SHALL fail without building
 
-##### Scenario: Uncomputable base hash aborts the launch
+##### Scenario: Missing base inputs abort the launch
 
-- GIVEN `config/` contains a directory or a build-context file is missing
+- GIVEN the repository `Containerfile` or the `config/` directory is missing
 - WHEN the project launches
 - THEN the launcher SHALL abort with an error and SHALL NOT build or boot an
   image
+
+##### Scenario: Non-file config entries do not affect the hash
+
+- GIVEN `config/` contains a directory alongside its regular files and the
+  package image tag exists in the cache
+- WHEN the project launches
+- THEN the launcher SHALL select the same tag as it would without the directory
+- AND it SHALL boot the cached image without building
 
 ### ADDED Requirements
 
@@ -63,9 +73,11 @@ error rather than launch with an image whose freshness cannot be determined.
 
 When the launcher builds a package-specific image, it SHALL remove from the
 microsandbox cache every other image whose reference matches
-`localhost/tau-agent-isolated-<basename>-<8 hex>[:<8 hex>]:latest` (both the
-current two-hash form and the legacy single-hash form). It SHALL NOT remove the
-image it just loaded, and SHALL ignore images that are already absent.
+`localhost/tau-agent-isolated-<basename>-<8 hex>:latest` (legacy single-hash
+form) or `localhost/tau-agent-isolated-<basename>-<8 hex>-<8 hex>:latest`
+(current two-hash form). It SHALL NOT remove the image it just loaded. A failed
+removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be
+reported as an error.
 
 ##### Scenario: Base-triggered rebuild removes the superseded image
 
@@ -80,3 +92,11 @@ image it just loaded, and SHALL ignore images that are already absent.
 - GIVEN the cache contains no package images for the project
 - WHEN the launcher builds the package image for the first time
 - THEN the build and load SHALL succeed and no removal error SHALL be reported
+
+##### Scenario: Failed removal does not fail the launch
+
+- GIVEN the cache contains a superseded package image whose removal from the
+  cache fails
+- WHEN the launcher rebuilds the package image for the changed base
+- THEN the build, the load, and the launch SHALL succeed
+- AND no removal error SHALL be reported

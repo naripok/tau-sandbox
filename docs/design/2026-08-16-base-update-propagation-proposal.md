@@ -21,7 +21,8 @@ rebuild flow that `.tau-packages` changes already use.
 **In scope:**
 
 - Per-project image tags embed a hash of the base build context (`Containerfile` +
-  every file under `config/`), so any base-input change invalidates the tag.
+  every regular file directly under `config/`), so any base-input change
+  invalidates the tag.
 - `run.sh` prunes superseded same-project images from the msb cache when it rebuilds
   a per-project image, so base bumps do not accumulate orphaned image layers.
 - Update `docs/SPEC.md` (living spec), `README.md`, the `Containerfile` upgrade
@@ -43,8 +44,10 @@ rebuild flow that `.tau-packages` changes already use.
 **Recommended: content hash of the build context in the per-project tag.**
 
 `run.sh` computes `BASE_HASH` — the first 8 hex characters of the SHA-256 of the
-concatenated SHA-256 digests of `Containerfile` and every file in `config/*` — and
-names package images `tau-agent-isolated-<project>-<BASE_HASH>-<PKG_HASH>`.
+hex-encoded SHA-256 digests (64 lowercase hex chars each, concatenated with no
+separators) of the `Containerfile` and every regular file directly under `config/`
+(sorted by path; dotfiles like `config/.bashrc` included) — and names package
+images `tau-agent-isolated-<project>-<BASE_HASH>-<PKG_HASH>`.
 
 When the base changes (`TAU_REF` bump, wrapper/entrypoint/config edits), `BASE_HASH`
 changes, the tag is absent from `msb images -q`, and the existing interactive
@@ -54,12 +57,16 @@ tau@$TAU_REF` layer because the `ARG` value it consumes changed) and loads it vi
 still bypasses everything.
 
 On that rebuild, `run.sh` also prunes any other cached image matching
-`localhost/tau-agent-isolated-<project>-<8hex>|<8hex>-<8hex>:latest` (excluding the
-fresh ref), tolerating `msb rmi` failures. This covers both tags orphaned by base
-bumps and legacy pre-change tags.
+`localhost/tau-agent-isolated-<project>-<8hex>:latest` (legacy single-hash form)
+or `localhost/tau-agent-isolated-<project>-<8hex>-<8hex>:latest` (two-hash form),
+excluding the fresh ref. `msb rmi` failures are ignored — they must never fail the
+build, load, or launch. This covers both tags orphaned by base bumps and legacy
+pre-change tags.
 
-Hash-input failures (missing file, directory inside `config/`) abort loudly under
-`set -e` rather than silently launching a stale image.
+Hash inputs: only regular files are hashed, so directories that appear under
+`config/` (e.g. `__pycache__/`) are ignored deterministically. A missing
+`Containerfile` or `config/` directory aborts loudly under `set -e` rather than
+silently launching an image whose freshness cannot be verified.
 
 **Alternatives considered:**
 
