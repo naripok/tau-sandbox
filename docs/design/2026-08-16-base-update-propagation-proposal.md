@@ -23,8 +23,10 @@ rebuild flow that `.tau-packages` changes already use.
 - Per-project image tags embed a hash of the base build context (`Containerfile` +
   every regular file directly under `config/`), so any base-input change
   invalidates the tag.
-- `run.sh` prunes superseded same-project images from the msb cache when it rebuilds
-  a per-project image, so base bumps do not accumulate orphaned image layers.
+- `run.sh` prunes superseded images of this project's *current package content*
+  from the msb cache when it rebuilds a per-project image, so base bumps do not
+  accumulate orphaned image layers without touching images of other package
+  contents (same-basename projects, or revertible older contents).
 - Update `docs/SPEC.md` (living spec), `README.md`, the `Containerfile` upgrade
   comment, and `config/APPEND_SYSTEM.md`.
 - Update `tests/test_run.py` and add regression tests for the stale-base scenario.
@@ -56,12 +58,17 @@ tau@$TAU_REF` layer because the `ARG` value it consumes changed) and loads it vi
 `podman save | msb load`. Non-interactive runs keep refusing to rebuild; `TAU_IMAGE`
 still bypasses everything.
 
-On that rebuild, `run.sh` also prunes any other cached image matching
-`localhost/tau-agent-isolated-<project>-<8hex>:latest` (legacy single-hash form)
-or `localhost/tau-agent-isolated-<project>-<8hex>-<8hex>:latest` (two-hash form),
-excluding the fresh ref. `msb rmi` failures are ignored — they must never fail the
-build, load, or launch. This covers both tags orphaned by base bumps and legacy
-pre-change tags.
+On that rebuild, `run.sh` also prunes any other cached image tagged with this
+project's *current package hash*: `localhost/tau-agent-isolated-<project>-<8hex>:latest`
+(legacy single-hash form) and `localhost/tau-agent-isolated-<project>-<8hex>-<pkg-hash>:latest`
+(any superseded base version of the current package content), excluding the fresh
+ref. Images with any other package hash are never removed: same-basename projects
+with different `.tau-packages` contents share the tag namespace, and removing
+their images would force unexpected approvals (or non-interactive failures) on
+unrelated projects; keeping earlier package contents preserves cache reuse when
+`.tau-packages` is reverted. `msb rmi` failures are ignored — they must never fail
+the build, load, or launch. This covers exactly the tags orphaned by base bumps
+and legacy pre-change tags.
 
 Hash inputs: only regular files are hashed, so directories that appear under
 `config/` (e.g. `__pycache__/`) are ignored deterministically. A missing

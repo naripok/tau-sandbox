@@ -8,9 +8,13 @@ Delta against `docs/SPEC.md`.
 
 #### Requirement: Per-project package declarations
 
-<!-- Replaces the image-name rule. The package hash rule is unchanged. -->
+<!-- Replaces the image-name rule. The package hash rule is unchanged.
+When splicing into SPEC.md, retain the living "Non-interactive rebuild is
+refused" scenario alongside the scenarios below, then strip this comment. -->
 
-A non-empty `.tau-packages` file SHALL select image
+For this requirement, a `.tau-packages` file is non-empty when it declares at
+least one package name after stripping comments, blank lines, and surrounding
+whitespace. A non-empty `.tau-packages` file SHALL select image
 `tau-agent-isolated-<basename>-<base-hash>-<package-hash>`, where:
 
 - `<package-hash>` is derived from the raw bytes of `.tau-packages` (unchanged
@@ -79,7 +83,7 @@ cannot be verified against the current inputs.
 - THEN the launcher SHALL select the same tag as it would without the directory
 - AND it SHALL boot the cached image without building
 
-##### Scenario: Added or removed base input changes the tag
+##### Scenario: Added base input changes the tag
 
 - GIVEN a package image was tagged from a base-input set without a particular
   regular file under `config/`
@@ -87,17 +91,33 @@ cannot be verified against the current inputs.
 - THEN the launcher SHALL select a different image tag than the previously
   built one
 
+##### Scenario: Removed base input changes the tag
+
+- GIVEN a package image was tagged from a base-input set that included a
+  particular regular file under `config/`
+- WHEN that file is removed without changing any other input
+- THEN the launcher SHALL select a different image tag than the previously
+  built one
+
 ### ADDED Requirements
 
 #### Requirement: Superseded package images are pruned
 
+Package image tags are keyed by basename and package hash, so same-basename
+projects share one tag namespace: projects with identical base inputs and
+identical `.tau-packages` content use the same tag, while different package
+contents produce different tags under the same basename prefix.
+
 When the launcher builds a package-specific image, it SHALL remove from the
-microsandbox cache every other image whose reference matches
+microsandbox cache every other image whose reference is
 `localhost/tau-agent-isolated-<basename>-<8 hex>:latest` (legacy single-hash
-form) or `localhost/tau-agent-isolated-<basename>-<8 hex>-<8 hex>:latest`
-(current two-hash form). It SHALL NOT remove the image it just loaded. A failed
-removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be
-reported as an error.
+form) or `localhost/tau-agent-isolated-<basename>-<8 hex>-<package-hash>:latest`
+— any base version of this project's current package content. It SHALL NOT
+remove the image it just loaded. Images tagged with any other package hash —
+including those of same-basename projects with different `.tau-packages`
+content and those of earlier package contents of this project — SHALL NOT be
+removed. A failed removal SHALL NOT fail the build, the load, or the launch,
+and SHALL NOT be reported as an error.
 
 ##### Scenario: Base-triggered rebuild removes the superseded image
 
@@ -110,10 +130,24 @@ reported as an error.
 ##### Scenario: Legacy single-hash image is pruned
 
 - GIVEN the cache contains a package image tagged in the legacy single-hash
-  form for the same project
+  form for the same project and the same package content
 - WHEN the launcher rebuilds the package image
 - THEN the legacy image SHALL be removed from the cache
 - AND the newly built image SHALL remain
+
+##### Scenario: Same-basename projects keep their package images
+
+- GIVEN two projects with the same basename and different `.tau-packages`
+  contents both have cached package images
+- WHEN the launcher rebuilds the package image for one of them
+- THEN the other project's image SHALL remain in the cache
+
+##### Scenario: Earlier package content image survives a rebuild
+
+- GIVEN the cache contains a package image tagged from earlier `.tau-packages`
+  content of the same project
+- WHEN the launcher rebuilds the package image for the current content
+- THEN the earlier-content image SHALL remain in the cache
 
 ##### Scenario: Fresh build with an empty cache succeeds
 
