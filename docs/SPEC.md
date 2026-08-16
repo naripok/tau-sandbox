@@ -169,18 +169,20 @@ The sandbox SHALL:
 - mount `/tmp` as tmpfs
 - cap processes with `nproc`
 - use the public network profile without publishing inbound ports
-- allow egress to the exact LAN GPU server address `192.168.15.9` without allowing the rest of the private network
+- allow egress to exactly the hosts listed in `TAU_LAN_HOSTS` (comma-separated, empty by default) without allowing the rest of the private network
 
 #### Scenario: Guest identity is unprivileged
 
 - WHEN `id -u` runs in the guest
 - THEN it SHALL print `1000`
 
-#### Scenario: External DNS and the designated LAN server are reachable while inbound remains closed
+#### Scenario: External DNS and configured LAN hosts are reachable while inbound remains closed
 
 - WHEN the sandbox launches
 - THEN `--net public` SHALL be passed to `msb run`
-- AND `--net-rule allow@192.168.15.9` SHALL permit egress to only the designated private address
+- AND one `--net-rule allow@<host>` SHALL be passed per non-empty `TAU_LAN_HOSTS` entry
+- AND an unset or empty `TAU_LAN_HOSTS` SHALL pass no `--net-rule`
+- AND a `TAU_LAN_HOSTS` value containing characters outside `[0-9A-Za-z.:-]` SHALL abort the launch with an error
 - AND the broad `private` network profile SHALL NOT be enabled
 - AND no inbound port SHALL be published
 

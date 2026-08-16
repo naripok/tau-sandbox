@@ -124,6 +124,7 @@ All settings are controlled via environment variables:
 | `TAU_CPUS`         | `4`                 | Virtual CPUs for the sandbox                                        |
 | `TAU_MEM`          | `8G`                | Memory for the sandbox                                              |
 | `TAU_PIDS`         | `1024`              | Process (nproc) limit inside the sandbox                            |
+| `TAU_LAN_HOSTS`    | *(none)*            | Comma-separated exact-IP LAN hosts allowed egress; empty keeps all private addresses blocked |
 
 ### Environment Variables
 
@@ -138,7 +139,13 @@ VLLM_API_KEY=...
 
 ### Network Access
 
-The launcher uses microsandbox's `public` network profile and adds an exact-IP egress rule for the LAN GPU server at `192.168.15.9`. Agents may connect to that address on any port or protocol while other private-network addresses remain blocked. No guest ports are published, so this does not permit inbound connections to the sandbox.
+The launcher uses microsandbox's `public` network profile. Private-network addresses are blocked except for exact hosts listed in `TAU_LAN_HOSTS` (comma-separated IP addresses or hostnames, empty by default):
+
+```bash
+TAU_LAN_HOSTS=192.168.1.100 tau-sandbox tau
+```
+
+Agents may connect to each listed address on any port or protocol while all other private-network addresses remain blocked. No guest ports are published, so this does not permit inbound connections to the sandbox.
 
 ### Sandbox Environment Variables
 
@@ -190,7 +197,7 @@ Host sessions and logs are excluded and replaced by per-project named volumes. T
 | Agent escapes to host filesystem   | Hardware-isolated microVM; mounts are brokered host-side with path containment and identity virtualization                                  |
 | Agent escalates to root in guest   | Runs as unprivileged `tau` (1000), uses the `restricted` profile, and has no setuid/setgid image binaries                                    |
 | Agent modifies the image rootfs    | Root writes are permission-limited and the writable overlay is discarded after every run; `/tmp` is a separate tmpfs                        |
-| Network exfiltration               | Public internet, gateway DNS, and only LAN host `192.168.15.9` are allowed for egress; other private addresses and all unpublished inbound traffic are denied |
+| Network exfiltration               | Public internet, gateway DNS, and only hosts listed in `TAU_LAN_HOSTS` are allowed for egress; other private addresses and all unpublished inbound traffic are denied |
 | Persistent volume as attack vector | Volume is microsandbox-managed, not a host bind mount. Intra-project persistence of malicious files is possible but contained                |
 | Secrets leak through images        | API keys are forwarded per-run from host env; never baked into the image                                                                    |
 

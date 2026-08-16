@@ -188,17 +188,30 @@ def test_run_script_generates_correct_msb_command():
     assert "--security restricted" in run_line
     assert "--tmpfs /tmp" in run_line
     assert "--user 1000:1000" in run_line
-    # Public profile: internet egress + gateway DNS from msb, one exact LAN
-    # exception for the GPU server, and no published inbound ports. The old
-    # --net-default-ingress deny path dropped DNS, so it must not come back.
+    # Public profile: internet egress + gateway DNS from msb, LAN exceptions
+    # only when TAU_LAN_HOSTS is set (empty by default), and no published
+    # inbound ports. The old --net-default-ingress deny path dropped DNS,
+    # so it must not come back.
     assert "--net public" in run_line
-    assert "--net-rule allow@192.168.15.9" in run_line
+    assert "--net-rule" not in run_line
     assert "--net private" not in run_line
     assert "--net-default-ingress" not in run_line
     # Working directory
     assert "-w /workspace" in run_line
     # Image and command
     assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+
+
+def test_lan_hosts_emit_one_net_rule_per_entry(tmp_path):
+    """TAU_LAN_HOSTS adds one exact-IP --net-rule argument per entry."""
+    (tmp_path / ".env").write_text("")
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=tmp_path, env={"TAU_LAN_HOSTS": "192.168.1.100,192.168.1.101"}
+    )
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert "--net-rule allow@192.168.1.100" in run_line
+    assert "--net-rule allow@192.168.1.101" in run_line
 
 
 def test_run_script_uses_entrypoint_from_image():

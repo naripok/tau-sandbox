@@ -48,7 +48,7 @@ The next run requires user approval before building the package-specific image.
 
 ## Network and resources
 
-- Outbound internet and DNS are enabled. The LAN GPU server at `192.168.15.9` is reachable; other private-network addresses are blocked. Inbound connections are blocked because no ports are published, and the host is not reachable through guest `localhost`.
+- Outbound internet and DNS are enabled. Only exact hosts allowlisted through the host-side `TAU_LAN_HOSTS` variable are reachable on the private network (forward it in the host env file so the agent can see the list); all other private-network addresses are blocked. Inbound connections are blocked because no ports are published, and the host is not reachable through guest `localhost`.
 - Variables from the host env file are forwarded into the VM; use `env` to inspect them.
 - Defaults are 4 vCPUs, 8 GB memory, and 1024 processes; `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` override them.
 

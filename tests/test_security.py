@@ -97,19 +97,40 @@ def test_security_profile_and_identity_flags(tmp_path):
     assert "--user 1000:1000" in run_line
 
 
-def test_network_policy_allows_only_the_designated_lan_host(tmp_path):
-    """The public profile retains internet and DNS access while an exact-IP
-    rule permits the GPU server without exposing the rest of the private LAN.
-    Inbound remains closed because the launcher publishes no ports."""
+def test_network_policy_allows_only_configured_lan_hosts(tmp_path):
+    """The public profile retains internet and DNS access while exact-IP
+    TAU_LAN_HOSTS rules permit only the configured hosts without exposing
+    the rest of the private LAN. The variable defaults to empty, so no
+    --net-rule is emitted. Inbound remains closed because the launcher
+    publishes no ports."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = _run_line(msb_log)
     assert "--net public" in run_line
-    assert "--net-rule allow@192.168.15.9" in run_line
+    assert "--net-rule" not in run_line
     assert "--net private" not in run_line
     assert "--net-default-ingress" not in run_line
     assert " -p " not in run_line
     assert " --port " not in run_line
+
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=tmp_path, env={"TAU_LAN_HOSTS": "192.168.1.100"}
+    )
+    run_line = _run_line(msb_log)
+    assert "--net public" in run_line
+    assert "--net-rule allow@192.168.1.100" in run_line
+    assert "--net-rule allow@192.168.1.101" not in run_line
+
+
+def test_lan_hosts_rejects_argument_injection(tmp_path):
+    """TAU_LAN_HOSTS entries must not smuggle extra msb arguments."""
+    (tmp_path / ".env").write_text("")
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=tmp_path, env={"TAU_LAN_HOSTS": "1.2.3.4 --security off"}
+    )
+    assert result.returncode == 1
+    assert "TAU_LAN_HOSTS" in result.stderr
+    assert not [line for line in msb_log if line.startswith("msb run")]
 
 
 def test_env_forwarding_is_limited_to_env_file(tmp_path):

@@ -86,9 +86,10 @@ def test_append_system_doc_describes_packages_file():
     assert ".tau-packages" in _read("APPEND_SYSTEM.md")
 
 
-def test_append_system_doc_describes_lan_gpu_access():
+def test_append_system_doc_describes_lan_host_egress_rule():
     text = _read("APPEND_SYSTEM.md")
-    assert "192.168.15.9" in text
+    assert "192.168.15.9" not in text
+    assert "TAU_LAN_HOSTS" in text
     assert "other private-network addresses are blocked" in text
 
 

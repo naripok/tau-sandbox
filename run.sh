@@ -18,6 +18,9 @@ ENV_FILE="${TAU_ENV_FILE:-${HOME}/.env}"
 CPUS="${TAU_CPUS:-4}"
 MEM="${TAU_MEM:-8G}"
 PIDS="${TAU_PIDS:-1024}"
+# TAU_LAN_HOSTS: comma-separated exact-IP egress exceptions to the public
+# network profile; empty (default) keeps every private address denied.
+LAN_HOSTS="${TAU_LAN_HOSTS:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -d "$CONFIG_DIR" ] && CONFIG_DIR="$(realpath "$CONFIG_DIR")"
 [ -d "$AGENTS_DIR" ] && AGENTS_DIR="$(realpath "$AGENTS_DIR")"
@@ -243,11 +246,24 @@ MOUNT_ARGS+=(
 )
 
 # --- Run ---
-# The public profile allows internet egress and gateway DNS. Add one narrow
-# exception for the LAN GPU server; all other private addresses remain denied.
-# Inbound stays closed because no ports are published. The low-level
+# The public profile allows internet egress and gateway DNS. TAU_LAN_HOSTS
+# adds one narrow exact-IP rule per entry; all other private addresses remain
+# denied. Inbound stays closed because no ports are published. The low-level
 # --net-default-ingress deny path is intentionally avoided because it silently
 # dropped microsandbox's DNS allow rule.
+NET_RULES=()
+if [ -n "$LAN_HOSTS" ]; then
+    if ! printf '%s' "$LAN_HOSTS" | grep -qE '^[0-9A-Za-z.:-]+(,[0-9A-Za-z.:-]+)*$'; then
+        echo "Error: TAU_LAN_HOSTS contains invalid entries." >&2
+        echo "Expected comma-separated IP addresses or hostnames." >&2
+        exit 1
+    fi
+    IFS=',' read -r -a LAN_HOST_ARRAY <<< "$LAN_HOSTS"
+    for lan_host in "${LAN_HOST_ARRAY[@]}"; do
+        NET_RULES+=(--net-rule "allow@${lan_host}")
+    done
+fi
+
 msb run \
     "${MOUNT_ARGS[@]}" \
     -c "$CPUS" \
@@ -257,7 +273,7 @@ msb run \
     --tmpfs /tmp \
     --user 1000:1000 \
     --net public \
-    --net-rule "allow@192.168.15.9" \
+    "${NET_RULES[@]}" \
     --label "project=${PROJECT_NAME}" \
     -w /workspace \
     "${ENV_ARGS[@]}" \
