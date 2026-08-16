@@ -93,11 +93,36 @@ compute_hash() {
     sha256sum "$file" | cut -c1-8
 }
 
+compute_base_hash() {
+    # Freshness key for the base the package image is baked from: the
+    # Containerfile and every regular file under config/ (dotfiles included),
+    # digests concatenated in bytewise path order. Directories and other
+    # non-regular entries are skipped. A missing Containerfile or config/
+    # directory aborts loudly: a package launch must never derive a tag whose
+    # freshness cannot be verified against the current inputs.
+    [ -f "$SCRIPT_DIR/Containerfile" ] || {
+        echo "Error: $SCRIPT_DIR/Containerfile is missing; cannot derive a package image tag." >&2
+        exit 1
+    }
+    [ -d "$SCRIPT_DIR/config" ] || {
+        echo "Error: $SCRIPT_DIR/config is missing; cannot derive a package image tag." >&2
+        exit 1
+    }
+    {
+        sha256sum "$SCRIPT_DIR/Containerfile"
+        find "$SCRIPT_DIR/config" -maxdepth 1 -type f -print0 |
+            LC_ALL=C sort -z | xargs -0 -r sha256sum
+    } | awk '{ printf "%s", $1 }' | sha256sum | cut -c1-8
+}
+
 # Image reference resolution.
 # TAU_IMAGE overrides everything: the reference is passed to msb verbatim
 # and image management (build/load) is skipped entirely — the user manages
 # that image externally (e.g. `make build`). Otherwise, use per-project
 # naming when .tau-packages lists packages, else the shared base image.
+# Per-project names embed a hash of the base inputs (Containerfile and
+# config/), so base updates invalidate the tag and trigger the approval-
+# gated rebuild on the next run.
 if [ -n "${TAU_IMAGE:-}" ]; then
     IMAGE_REF="$TAU_IMAGE"
     HAS_PACKAGES=0
@@ -114,7 +139,8 @@ else
     fi
     if [ "$HAS_PACKAGES" -eq 1 ]; then
         PKG_HASH=$(compute_hash ".tau-packages")
-        IMAGE_NAME="tau-agent-isolated-${PROJECT_NAME}-${PKG_HASH}"
+        BASE_HASH=$(compute_base_hash)
+        IMAGE_NAME="tau-agent-isolated-${PROJECT_NAME}-${BASE_HASH}-${PKG_HASH}"
     fi
     IMAGE_REF="localhost/${IMAGE_NAME}:latest"
 fi

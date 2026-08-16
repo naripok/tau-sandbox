@@ -382,7 +382,7 @@ def test_per_project_image_with_packages_builds_and_loads(tmp_path):
     assert rc == 0, f"output: {output}"
     assert "Approve?" in output
 
-    expected_image = f"tau-agent-isolated-{tmp_path.name}-{pkg_hash}"
+    expected_image = f"tau-agent-isolated-{tmp_path.name}-{_base_hash()}-{pkg_hash}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"localhost/{expected_image}:latest -- bash" in run_line
     build_line = next(line for line in podman_log if line.startswith("podman build"))
@@ -390,6 +390,121 @@ def test_per_project_image_with_packages_builds_and_loads(tmp_path):
     assert "-t" in build_line and expected_image in build_line
     save_line = next(line for line in podman_log if line.startswith("podman save"))
     assert expected_image in save_line
+
+
+def test_current_package_image_skips_build_and_prune(tmp_path):
+    """An up-to-date cached package image (current base and package hashes)
+    boots directly: no podman build, no rmi. Locks the reuse guarantee and
+    the no-prune-on-cache-hit rule."""
+    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".env").write_text("")
+    pkg_hash = hashlib.sha256((tmp_path / ".tau-packages").read_bytes()).hexdigest()[:8]
+    current = f"localhost/tau-agent-isolated-{tmp_path.name}-{_base_hash()}-{pkg_hash}:latest"
+    result, msb_log, podman_log = invoke_run("bash", cwd=tmp_path, images=(current,))
+    assert result.returncode == 0
+    assert not podman_log, f"unexpected podman invocations: {podman_log}"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"{current} -- bash" in run_line
+    assert not any(line.startswith("msb rmi") for line in msb_log)
+
+
+def test_missing_containerfile_aborts_package_launch(tmp_path):
+    """A package project cannot derive its image tag without the
+    Containerfile: the clone is broken, and launching with a tag whose
+    freshness cannot be verified would silently pin an old base."""
+    repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    result, _, podman_log = invoke_run("bash", cwd=project, script=repo / "run.sh")
+    assert result.returncode == 1
+    assert "Containerfile" in result.stderr
+    assert not podman_log
+
+
+def test_missing_config_aborts_package_launch(tmp_path):
+    """A package project cannot derive its image tag without the config/
+    directory, for the same freshness reason as a missing Containerfile."""
+    repo = _stub_repo(tmp_path, "stub-repo", config=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    result, _, podman_log = invoke_run("bash", cwd=project, script=repo / "run.sh")
+    assert result.returncode == 1
+    assert "config" in result.stderr
+    assert not podman_log
+
+
+def test_added_base_input_changes_tag(tmp_path):
+    """Adding a regular file under config/ changes the derived tag (set-
+    change semantics). The same project is launched against two stub repos
+    that differ only by an extra config file, so only the base hash can
+    differ between the two tags."""
+    base_repo = _stub_repo(tmp_path, "stub-a")
+    extra_repo = _stub_repo(tmp_path, "stub-b")
+    (extra_repo / "config" / "extra.txt").write_text("extra\n")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    rc_a, _, msb_a, _ = invoke_run_tty(cwd=project, script=base_repo / "run.sh", answer="y\n")
+    rc_b, _, msb_b, _ = invoke_run_tty(cwd=project, script=extra_repo / "run.sh", answer="y\n")
+    rc_c, _, msb_c, _ = invoke_run_tty(cwd=project, script=base_repo / "run.sh", answer="y\n")
+    assert rc_a == 0 and rc_b == 0 and rc_c == 0
+
+    def tag(msb_log):
+        # The image ref is the last token before the ` -- ` separator.
+        run_line = next(line for line in msb_log if line.startswith("msb run"))
+        return run_line.rsplit(" -- ", 1)[0].rsplit(" ", 1)[1]
+
+    tag_a, tag_b, tag_c = tag(msb_a), tag(msb_b), tag(msb_c)
+    # Addition changes the tag; removal restores it (set-change semantics).
+    assert tag_a != tag_b
+    assert tag_c == tag_a
+    assert _base_hash(base_repo) in tag_a
+    assert _base_hash(extra_repo) in tag_b
+    assert _base_hash(base_repo) != _base_hash(extra_repo)
+    # Content-change branch: rewriting an existing input's bytes (not just
+    # the file set) must also change the tag.
+    content_file = base_repo / "config" / "APPEND_SYSTEM.md"
+    content_file.write_bytes(content_file.read_bytes() + b"\n# base update\n")
+    rc_d, _, msb_d, _ = invoke_run_tty(cwd=project, script=base_repo / "run.sh", answer="y\n")
+    assert rc_d == 0
+    tag_d = tag(msb_d)
+    assert tag_d != tag_a
+    assert _base_hash(base_repo) in tag_d
+
+
+def test_shared_base_launch_ignores_missing_base_inputs(tmp_path):
+    """Projects without a non-empty .tau-packages file never derive a
+    package tag, so a missing Containerfile must not abort them: they boot
+    the shared base image."""
+    repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("")
+    result, msb_log, _ = invoke_run("bash", cwd=project, script=repo / "run.sh")
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+
+
+def test_tau_image_override_ignores_missing_base_inputs(tmp_path):
+    """TAU_IMAGE bypasses package processing entirely, so a missing
+    Containerfile must not abort an override launch."""
+    repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=project, script=repo / "run.sh", env={"TAU_IMAGE": "custom:tag"}
+    )
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert "custom:tag -- bash" in run_line
 
 
 def test_packages_approval_declined_aborts(tmp_path):
