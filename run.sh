@@ -125,8 +125,8 @@ prune_superseded_package_images() {
     local cached_ref
     while IFS= read -r cached_ref; do
         case "$cached_ref" in
-            localhost/tau-agent-isolated-${PROJECT_NAME}-${PKG_HASH}:latest | \
-            localhost/tau-agent-isolated-${PROJECT_NAME}-${hex8}-${PKG_HASH}:latest)
+            "localhost/tau-agent-isolated-${PROJECT_NAME}-${PKG_HASH}:latest" | \
+            "localhost/tau-agent-isolated-${PROJECT_NAME}-"${hex8}"-${PKG_HASH}:latest")
                 [ "$cached_ref" = "$IMAGE_REF" ] && continue
                 msb rmi "$cached_ref" >/dev/null 2>&1 || true
                 ;;

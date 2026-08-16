@@ -477,6 +477,32 @@ def test_added_base_input_changes_tag(tmp_path):
     assert _base_hash(base_repo) in tag_d
 
 
+def test_non_file_config_entries_do_not_change_tag(tmp_path):
+    """A directory inside config/ must not change the derived tag: the hash
+    input set is regular files only, so an incidental directory (e.g. a
+    build byproduct) keeps the cached image usable. Pins the scenario
+    deterministically instead of relying on __pycache__ happening to sit
+    in the working tree's config/."""
+    repo = _stub_repo(tmp_path, "stub-repo")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    current = (
+        f"localhost/tau-agent-isolated-{project.name}-{_base_hash(repo)}-{pkg_hash}:latest"
+    )
+    # A directory appears under config/ after the image was built.
+    (repo / "config" / "build-cache").mkdir()
+    result, msb_log, podman_log = invoke_run(
+        "bash", cwd=project, script=repo / "run.sh", images=(current,)
+    )
+    assert result.returncode == 0
+    assert not podman_log
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"{current} -- bash" in run_line
+
+
 def test_stale_package_image_rebuilds_and_prunes_superseded(tmp_path):
     """A base change invalidates the per-project tag: the cached legacy and
     superseded images of the current package content are replaced after
