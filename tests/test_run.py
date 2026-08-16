@@ -9,6 +9,7 @@ import os
 import pathlib
 import pty
 import select
+import shutil
 import subprocess
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
@@ -41,6 +42,34 @@ def _fake_env(tmp: pathlib.Path, cwd, fake_bin, msb_log, podman_log, images_file
     fake_env.update(env or {})
     return fake_env
 
+
+def _base_hash(root: pathlib.Path = REPO_ROOT) -> str:
+    """Recompute run.sh's base-input hash: the SHA-256 of the hex digests
+    of the Containerfile and every regular file under config/ (dotfiles
+    included, bytewise path order), first 8 hex chars. Mirrors the run.sh
+    pipeline so tests can predict per-project image tags."""
+    config = root / "config"
+    files = [root / "Containerfile"] + sorted(
+        (p for p in config.iterdir() if p.is_file()),
+        key=lambda p: p.name.encode(),
+    )
+    digests = "".join(hashlib.sha256(p.read_bytes()).hexdigest() for p in files)
+    return hashlib.sha256(digests.encode("ascii")).hexdigest()[:8]
+
+
+def _stub_repo(tmp: pathlib.Path, name: str, containerfile=True, config=True) -> pathlib.Path:
+    """Copy run.sh and (optionally) Containerfile and config/ into a stub
+    repo so tests can exercise run.sh's base-input handling without
+    mutating the real repository files."""
+    repo = tmp / name
+    repo.mkdir()
+    shutil.copy(REPO_ROOT / "run.sh", repo / "run.sh")
+    if containerfile:
+        shutil.copy(REPO_ROOT / "Containerfile", repo / "Containerfile")
+    if config:
+        shutil.copytree(REPO_ROOT / "config", repo / "config")
+    return repo
+
 FAKE_MSB = """#!/bin/bash
 echo "msb $*" >> "$MSB_LOG"
 if [ "$1" = "run" ] && [ -n "${MSB_SNAPSHOT_CHECK:-}" ]; then
@@ -64,6 +93,7 @@ case "$1" in
         ;;
     volume) exit 0 ;;
     load) cat >/dev/null; exit 0 ;;
+    rmi) [ "${MSB_RMI_FAIL:-0}" = "1" ] && exit 1 || exit 0 ;;
     *) exit 0 ;;
 esac
 """
@@ -74,9 +104,11 @@ exit 0
 """
 
 
-def invoke_run(*args, env=None, cwd=None, images=()):
+def invoke_run(*args, env=None, cwd=None, images=(), script=REPO_ROOT / "run.sh"):
     """Run run.sh non-interactively (no TTY) with fake msb/podman.
 
+    script selects which run.sh copy to execute; tests use a stub repo
+    copy to exercise base-input handling without touching the real repo.
     Returns (result, msb_log_lines, podman_log_lines).
     """
     import tempfile
@@ -87,7 +119,7 @@ def invoke_run(*args, env=None, cwd=None, images=()):
     fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env)
 
     result = subprocess.run(
-        [str(REPO_ROOT / "run.sh"), *args],
+        [str(script), *args],
         capture_output=True,
         text=True,
         env=fake_env,
@@ -102,7 +134,7 @@ def invoke_run(*args, env=None, cwd=None, images=()):
     return result, _lines(msb_log), _lines(podman_log)
 
 
-def invoke_run_tty(cwd, env=None, answer="y\n"):
+def invoke_run_tty(cwd, env=None, answer="y\n", images=(), script=REPO_ROOT / "run.sh"):
     """Run run.sh in a pseudo-terminal and answer the package approval
     prompt. Returns (returncode, all_output).
 
@@ -113,12 +145,13 @@ def invoke_run_tty(cwd, env=None, answer="y\n"):
 
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="tau-run-tty-"))
     fake_bin, msb_log, podman_log, images_file = _fake_bin(tmp)
+    images_file.write_text("\n".join(images) + ("\n" if images else ""))
     fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env)
     fake_env["TERM"] = "xterm"
 
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        [str(REPO_ROOT / "run.sh"), "bash"],
+        [str(script), "bash"],
         cwd=str(cwd),
         env=fake_env,
         stdin=slave,
