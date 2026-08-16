@@ -132,6 +132,7 @@ def invoke_run_tty(cwd, env=None, answer="y\n"):
     fake_env["TERM"] = "xterm"
 
     master, slave = pty.openpty()
+    # The pty/select/timeout loop below stays untouched.
     proc = subprocess.Popen(
         [str(REPO_ROOT / "run.sh"), "bash"],
         ...
@@ -191,7 +192,7 @@ git commit -m "test: harness support for stub repos, rmi failure, base hashes"
 
 **Files:**
 - Modify: `tests/test_run.py`
-- Modify: `run.sh` (header comment ~line 95-101 area, `compute_hash` block, image resolution block ~lines 120-126)
+- Modify: `run.sh` (resolution-block comment ~lines 96-100, `compute_hash` block, image resolution block ~lines 120-126)
 
 **Delta requirement:** MODIFIED "Per-project package declarations" (base-hash naming, non-empty definition, abort rule; scenarios: base input change invalidates, added/removed input, non-file entries, unchanged reuse, missing-input aborts, other launches unaffected).
 
@@ -321,7 +322,7 @@ compute_base_hash() {
     {
         sha256sum "$SCRIPT_DIR/Containerfile"
         find "$SCRIPT_DIR/config" -maxdepth 1 -type f -print0 |
-            LC_ALL=C sort -z | xargs -0 sha256sum
+            LC_ALL=C sort -z | xargs -0 -r sha256sum
     } | awk '{ printf "%s", $1 }' | sha256sum | cut -c1-8
 }
 ```
@@ -458,7 +459,8 @@ def test_stale_package_image_rebuilds_and_prunes_superseded(tmp_path):
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"{current} -- bash" in run_line
     build_line = next(line for line in podman_log if line.startswith("podman build"))
-    assert current.removeprefix("localhost/") in build_line
+    # podman build tags the host image without localhost/ and without :latest.
+    assert current.removeprefix("localhost/").removesuffix(":latest") in build_line
     rmi_lines = {line for line in msb_log if line.startswith("msb rmi")}
     assert rmi_lines == {f"msb rmi {legacy_current}", f"msb rmi {stale_base}"}
 ```
@@ -525,6 +527,8 @@ prune_superseded_package_images() {
 ```
 
 Note the case patterns must stay unquoted so the `$hex8` character class and the hash variables are re-interpreted as patterns; `PROJECT_NAME` and `PKG_HASH` contain only `[a-zA-Z0-9._-]`, so no glob metacharacters enter the pattern.
+
+The `[ "$cached_ref" = "$IMAGE_REF" ] && continue` guard (spec: "SHALL NOT remove the image it just loaded") is not directly exercised by these tests — the fake msb's image listing is static and never shows the freshly loaded tag. It is defense-in-depth for real caches, where the fresh tag legitimately matches the two-hash pattern; keep it.
 
 In the build block, after the load line:
 
