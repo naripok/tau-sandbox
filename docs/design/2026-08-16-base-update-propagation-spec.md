@@ -23,8 +23,8 @@ whitespace. A non-empty `.tau-packages` file SHALL select image
 - `<base-hash>` is the first eight hexadecimal characters of the SHA-256 of the
   text formed by concatenating, in lexicographic path order, the hex-encoded
   SHA-256 digests (64 lowercase hex characters, no separators) of the raw bytes
-  of each regular file directly under `config/`, preceded by the digest of the
-  repository `Containerfile`. It SHALL change when the content, or the set, of
+  of each regular file directly under `config/` (including dotfiles), preceded
+  by the digest of the repository `Containerfile`. It SHALL change when the content, or the set, of
   those files changes (a file added or removed) and SHALL be stable when none
   does. Non-regular entries under `config/` SHALL be ignored.
 
@@ -129,8 +129,8 @@ and SHALL NOT be reported as an error.
 
 ##### Scenario: Base-triggered rebuild removes the superseded image
 
-- GIVEN the cache contains a package image whose tag derives from an older base
-  hash (two-hash form)
+- GIVEN the cache contains a package image for the current package content
+  whose tag derives from an older base hash (two-hash form)
 - WHEN the launcher rebuilds the package image for the changed base
 - THEN the old image SHALL be removed from the cache
 - AND the newly built image SHALL remain
