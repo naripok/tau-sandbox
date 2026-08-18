@@ -48,6 +48,14 @@ The current directory SHALL be mounted read-write at `/workspace` and selected a
 - WHEN the guest reads or modifies it under `/workspace`
 - THEN both host and guest SHALL observe the same file
 
+The `/workspace` mount SHALL propagate guest-applied permission bits to the host inode (`host-perms=mirror`): a file or directory created or chmod'd inside the sandbox SHALL keep its rwx bits on the host, so scripts created or modified in the sandbox remain executable on the host and git's exec-bit tracking stays consistent. The mirror SHALL cover only ordinary rwx bits; ownership, file type, and setuid/setgid SHALL NOT be propagated, and an owner-access floor SHALL always apply. All other exports SHALL keep microsandbox's default private metadata policy, which materializes guest-created files as owner-only (`600`/`700`) on the host.
+
+#### Scenario: Sandbox-created files keep their modes on the host
+
+- GIVEN the guest creates a regular file and marks a script executable under `/workspace`
+- WHEN the host inspects the same files
+- THEN the host SHALL observe the same rwx bits the guest set, and a git worktree staged from the guest SHALL stay clean on the host
+
 ### Requirement: Project-local config discovery
 
 When `TAU_CONFIG_DIR` is unset, `run.sh` SHALL select as the host Tau config directory the `.tau` entry of the nearest ancestor of the launch directory, where the launch directory itself counts as an ancestor and `.tau` entries are matched as directories with symlinks followed; a dangling `.tau` symlink SHALL NOT match. When no ancestor matches, `${HOME}/.tau` SHALL apply. An explicitly set `TAU_CONFIG_DIR` SHALL take precedence over discovery, and discovery SHALL NOT change the resolved project path used for volume derivation.

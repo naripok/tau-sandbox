@@ -179,6 +179,8 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 | `/home/tau/.local/`                 | User-level package installs      | Read-write  |
 | `/tmp`                              | Per-run tmpfs                    | Read-write  |
 
+The `/workspace` mount uses `host-perms=mirror`: files and directories created or chmod'd inside the sandbox keep their rwx bits on the host inode, so scripts stay executable and git's exec-bit tracking stays consistent. Only ordinary rwx bits are mirrored — ownership, file type, and setuid/setgid are not, and an owner-access floor always applies. Other exports keep the sandbox's default private metadata policy, which materializes guest-created files as owner-only (`600`/`700`) on the host.
+
 ### Host Config and Isolated State
 
 `run.sh` copies existing regular top-level host `~/.tau` files and directories into a temporary host-side snapshot, excluding credentials, sessions, logs, trust-store files, and internal synchronization metadata. Symlinks at every depth are dereferenced while the host paths are available, so linked skills, extensions, themes, prompts, and other config become ordinary snapshot files and directories; dangling links cause startup to fail rather than silently installing broken resources. Snapshot entries are mounted individually and read-only under `/etc/tau-sandbox/bootstrap/tau`. On every start, the entrypoint replaces host-managed project copies with the current host versions and removes resources deleted from the host. Config created only inside the sandbox remains persistent. Sandbox edits to host-managed config are writable during a run but are replaced from the host at the next start.

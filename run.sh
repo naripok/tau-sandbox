@@ -300,8 +300,10 @@ fi
 # so microsandbox's root-owned mountpoint setup cannot create an unwritable
 # ~/.tau before the unprivileged entrypoint runs. Host history and trust
 # decisions are never exposed or modified.
+# host-perms=mirror: mirror guest rwx bits to the host inode so sandbox-created
+# files (including +x scripts) keep their modes on the host and git stays clean.
 MOUNT_ARGS=(
-    -v "$(pwd):/workspace"
+    -v "$(pwd):/workspace:host-perms=mirror"
     -v "$PERSIST_VOLUME:/home/tau"
 )
 BOOTSTRAP_STAGE=""
