@@ -12,7 +12,25 @@ set -euo pipefail
 # read-only at its normal sandbox-home path.
 # TAU_ENV_FILE: env file whose variables are forwarded into the VM.
 IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
-CONFIG_DIR="${TAU_CONFIG_DIR:-${HOME}/.tau}"
+# Project-local config discovery: when TAU_CONFIG_DIR is unset, the nearest
+# ancestor of the launch directory whose `.tau` entry is a directory (a real
+# per-project config or a symlink to one) supplies the config directory. This
+# mirrors the .tau-packages project-local convention. TAU_CONFIG_DIR always
+# wins; without a match the default (~/.tau) applies.
+CONFIG_DIR="${TAU_CONFIG_DIR:-}"
+if [ -z "$CONFIG_DIR" ]; then
+    probe_dir="$(pwd)"
+    while :; do
+        if [ -d "$probe_dir/.tau" ]; then
+            CONFIG_DIR="$probe_dir/.tau"
+            break
+        fi
+        parent="$(dirname "$probe_dir")"
+        [ "$parent" = "$probe_dir" ] && break
+        probe_dir="$parent"
+    done
+fi
+CONFIG_DIR="${CONFIG_DIR:-${HOME}/.tau}"
 AGENTS_DIR="${TAU_AGENTS_DIR:-${HOME}/.agents}"
 ENV_FILE="${TAU_ENV_FILE:-${HOME}/.env}"
 CPUS="${TAU_CPUS:-4}"

@@ -357,6 +357,106 @@ def test_run_script_skips_missing_host_config_mounts(tmp_path):
     assert ":/var/lib/tau-sandbox/logs" in run_line
 
 
+def test_run_script_discovers_nearest_ancestor_tau_config(tmp_path):
+    """With TAU_CONFIG_DIR unset, the closest ancestor's .tau directory
+    supplies the host config; the credentials mount proves which dir won."""
+    (tmp_path / ".env").write_text("")
+    project = tmp_path / "project"
+    workdir = project / "nested" / "dir"
+    workdir.mkdir(parents=True)
+    tau = project / ".tau"
+    tau.mkdir()
+    (tau / "credentials.json").write_text('{"openai": "sk-project"}\n')
+
+    result, msb_log, _ = invoke_run("bash", cwd=workdir)
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    shared_credentials = "/etc/tau-sandbox/shared/credentials.json"
+    assert f"-v {tau.resolve()}/credentials.json:{shared_credentials}" in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
+
+
+def test_run_script_innermost_ancestor_tau_config_wins(tmp_path):
+    """Nested project configs shadow outer ones: closest ancestor wins, so
+    a repo inside a configured project can override the project config."""
+    (tmp_path / ".env").write_text("")
+    project = tmp_path / "project"
+    workdir = project / "inner" / "sub"
+    workdir.mkdir(parents=True)
+    outer_tau = project / ".tau"
+    inner_tau = project / "inner" / ".tau"
+    outer_tau.mkdir()
+    inner_tau.mkdir()
+    (outer_tau / "credentials.json").write_text('{"openai": "sk-outer"}\n')
+    (inner_tau / "credentials.json").write_text('{"openai": "sk-inner"}\n')
+
+    result, msb_log, _ = invoke_run("bash", cwd=workdir)
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    shared_credentials = "/etc/tau-sandbox/shared/credentials.json"
+    assert f"-v {inner_tau.resolve()}/credentials.json:{shared_credentials}" in run_line
+    assert f"{outer_tau.resolve()}/credentials.json" not in run_line
+
+
+def test_run_script_discovers_tau_config_through_root_symlink(tmp_path):
+    """A project-root .tau symlink to an external config world is followed:
+    the world's real paths appear, so secrets can live outside the tree."""
+    (tmp_path / ".env").write_text("")
+    project = tmp_path / "project"
+    workdir = project / "src"
+    workdir.mkdir(parents=True)
+    world = tmp_path / "config-world"
+    world.mkdir()
+    (world / "credentials.json").write_text('{"openai": "sk-world"}\n')
+    (project / ".tau").symlink_to(world, target_is_directory=True)
+
+    result, msb_log, _ = invoke_run("bash", cwd=workdir)
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    shared_credentials = "/etc/tau-sandbox/shared/credentials.json"
+    assert f"-v {world.resolve()}/credentials.json:{shared_credentials}" in run_line
+    assert f"{project.resolve()}/.tau/credentials.json" not in run_line
+
+
+def test_run_script_tau_config_dir_override_beats_discovery(tmp_path):
+    """An explicitly set TAU_CONFIG_DIR always wins over a discovered .tau,
+    preserving the documented override for tests and automation."""
+    (tmp_path / ".env").write_text("")
+    project = tmp_path / "project"
+    workdir = project / "src"
+    workdir.mkdir(parents=True)
+    (project / ".tau").mkdir()
+    override = tmp_path / "override"
+    override.mkdir()
+    (override / "credentials.json").write_text('{"openai": "sk-override"}\n')
+
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=workdir, env={"TAU_CONFIG_DIR": str(override)}
+    )
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    shared_credentials = "/etc/tau-sandbox/shared/credentials.json"
+    assert f"-v {override.resolve()}/credentials.json:{shared_credentials}" in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
+
+
+def test_run_script_dangling_tau_symlink_falls_back_to_default(tmp_path):
+    """A dangling .tau link is not a config directory, so discovery keeps
+    walking and the default config applies instead of aborting."""
+    (tmp_path / ".env").write_text("")
+    project = tmp_path / "project"
+    workdir = project / "src"
+    workdir.mkdir(parents=True)
+    (project / ".tau").symlink_to(
+        tmp_path / "missing-world", target_is_directory=True
+    )
+
+    result, msb_log, _ = invoke_run("bash", cwd=workdir)
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+
+
 def test_run_script_resources_are_overridable(tmp_path):
     """TAU_CPUS / TAU_MEM / TAU_PIDS override the defaults."""
     (tmp_path / ".env").write_text("")

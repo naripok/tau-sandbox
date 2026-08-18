@@ -118,13 +118,17 @@ All settings are controlled via environment variables:
 | Variable           | Default             | Description                                                        |
 | ------------------ | ------------------- | ------------------------------------------------------------------ |
 | `TAU_IMAGE`        | `tau-agent-isolated`| Full image reference used by msb; bypasses `.tau-packages` and automatic build/load |
-| `TAU_CONFIG_DIR`   | `~/.tau`            | Host Tau config refreshed at each start; `credentials.json` remains shared |
+| `TAU_CONFIG_DIR`   | nearest ancestor `.tau`, else `~/.tau` | Host Tau config refreshed at each start; when unset, the nearest ancestor directory containing a `.tau` config dir is used; `credentials.json` remains shared |
 | `TAU_AGENTS_DIR`   | `~/.agents`         | Host `.agents` resources, mounted read-only at `/home/tau/.agents` |
 | `TAU_ENV_FILE`     | `~/.env`            | Env file whose variables are forwarded into the sandbox             |
 | `TAU_CPUS`         | `4`                 | Virtual CPUs for the sandbox                                        |
 | `TAU_MEM`          | `8G`                | Memory for the sandbox                                              |
 | `TAU_PIDS`         | `1024`              | Process (nproc) limit inside the sandbox                            |
 | `TAU_LAN_HOSTS`    | *(none)*            | Comma-separated exact-IP LAN hosts allowed egress; empty keeps all private addresses blocked |
+
+### Project-local config
+
+When `TAU_CONFIG_DIR` is not set, `run.sh` walks up from the launch directory and uses the nearest ancestor's `.tau` directory as the host Tau config directory — a per-project config that can be a real directory or a symlink to a config world outside the project tree. This mirrors the project-local `.tau-packages` convention: the sandbox adapts to the project you launch it from. `TAU_CONFIG_DIR` always overrides discovery.
 
 ### Environment Variables
 
