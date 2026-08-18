@@ -25,12 +25,52 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -d "$CONFIG_DIR" ] && CONFIG_DIR="$(realpath "$CONFIG_DIR")"
 [ -d "$AGENTS_DIR" ] && AGENTS_DIR="$(realpath "$AGENTS_DIR")"
 
-# Derive persistent volume name from project path.
+# Derive persistent volume names from the project path.
 # The basename makes "msb volume ls" output meaningful.
 # The 8-char hash suffix guarantees uniqueness.
 PROJECT_PATH="$(realpath "$(pwd)")"
 PROJECT_NAME="$(basename "$PROJECT_PATH")"
 PROJECT_HASH="$(echo "$PROJECT_PATH" | sha256sum | cut -c1-8)"
+
+sanitize_project_name() {
+    # Map an arbitrary basename to a safe name: lowercase, every run of
+    # characters outside [a-z0-9] collapsed to a single underscore, leading
+    # and trailing underscores removed, truncated so derived names fit a
+    # 255-byte path component and a 255-char OCI reference. Uniqueness is
+    # carried by the path hash, not by the name.
+    local out
+    out="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cs 'a-z0-9' '_')"
+    out="${out#_}"
+    out="${out%_}"
+    out="${out:0:218}"
+    out="${out%_}"
+    [ -n "$out" ] || out="project"
+    printf '%s' "$out"
+}
+
+# Volume names must be legal msb volume names: [A-Za-z0-9._-] (the tau-*
+# prefix supplies the required alphanumeric start) and short enough for a
+# 255-byte path component in the microsandbox volume store (longest prefix
+# "tau-sessions-" plus the 8-char hash leaves 233). Keep the raw basename
+# when legal so existing per-project volumes stay put; sanitize otherwise —
+# such projects could never have launched.
+VOLUME_NAME_RE='^[A-Za-z0-9._-]{1,233}$'
+if [[ ! "$PROJECT_NAME" =~ $VOLUME_NAME_RE ]]; then
+    PROJECT_NAME="$(sanitize_project_name "$PROJECT_NAME")"
+fi
+
+# Image names must be legal OCI reference path components: lowercase
+# [a-z0-9._-] with no adjacent separators (e.g. the "-." produced by a dot
+# directory), at most 255 chars for the full reference name. Keep the raw
+# basename when the derived name is legal so existing per-project images
+# stay put; sanitize otherwise.
+IMAGE_PROJECT_NAME="$PROJECT_NAME"
+IMAGE_NAME_PROBE="tau-agent-isolated-${IMAGE_PROJECT_NAME}-00000000-00000000"
+IMAGE_NAME_RE='^[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$'
+if [[ ! "$IMAGE_NAME_PROBE" =~ $IMAGE_NAME_RE ]] || [ "${#IMAGE_NAME_PROBE}" -gt 255 ]; then
+    IMAGE_PROJECT_NAME="$(sanitize_project_name "$PROJECT_NAME")"
+fi
+
 PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-${PROJECT_HASH}"
 SESSIONS_VOLUME="tau-sessions-${PROJECT_NAME}-${PROJECT_HASH}"
 LOGS_VOLUME="tau-logs-${PROJECT_NAME}-${PROJECT_HASH}"
@@ -119,14 +159,15 @@ prune_superseded_package_images() {
     # Cache hygiene after a package-image build: remove the images this build
     # supersedes — the legacy single-hash tag of the current package content
     # and any older base version of it. Images tagged with any other package
-    # hash (same-basename projects, earlier .tau-packages contents) are never
-    # removed. Failed removals are tolerated: pruning never blocks the launch.
+    # hash (same-image-name projects, earlier .tau-packages contents) are
+    # never removed. Failed removals are tolerated: pruning never blocks the
+    # launch.
     local hex8='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
     local cached_ref
     while IFS= read -r cached_ref; do
         case "$cached_ref" in
-            "localhost/tau-agent-isolated-${PROJECT_NAME}-${PKG_HASH}:latest" | \
-            "localhost/tau-agent-isolated-${PROJECT_NAME}-"${hex8}"-${PKG_HASH}:latest")
+            "localhost/tau-agent-isolated-${IMAGE_PROJECT_NAME}-${PKG_HASH}:latest" | \
+            "localhost/tau-agent-isolated-${IMAGE_PROJECT_NAME}-"${hex8}"-${PKG_HASH}:latest")
                 [ "$cached_ref" = "$IMAGE_REF" ] && continue
                 msb rmi "$cached_ref" >/dev/null 2>&1 || true
                 ;;
@@ -159,7 +200,7 @@ else
     if [ "$HAS_PACKAGES" -eq 1 ]; then
         PKG_HASH=$(compute_hash ".tau-packages")
         BASE_HASH=$(compute_base_hash)
-        IMAGE_NAME="tau-agent-isolated-${PROJECT_NAME}-${BASE_HASH}-${PKG_HASH}"
+        IMAGE_NAME="tau-agent-isolated-${IMAGE_PROJECT_NAME}-${BASE_HASH}-${PKG_HASH}"
     fi
     IMAGE_REF="localhost/${IMAGE_NAME}:latest"
 fi

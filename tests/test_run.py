@@ -392,6 +392,114 @@ def test_per_project_image_with_packages_builds_and_loads(tmp_path):
     assert expected_image in save_line
 
 
+def test_dot_directory_package_image_name_is_sanitized(tmp_path):
+    """A dot-directory basename is illegal in an OCI image reference (the
+    "-." sequence violates the path-component grammar), so the per-project
+    image name must drop the leading dot while the volume names keep the
+    raw basename: dot-directory volume names are legal msb volume names and
+    may already hold persistent state."""
+    project = tmp_path / ".dotproj"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+
+    rc, output, msb_log, podman_log = invoke_run_tty(cwd=project, answer="y\n")
+    assert rc == 0, f"output: {output}"
+    assert "Approve?" in output
+
+    expected_image = f"tau-agent-isolated-dotproj-{_base_hash()}-{pkg_hash}"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"localhost/{expected_image}:latest -- bash" in run_line
+    build_line = next(line for line in podman_log if line.startswith("podman build"))
+    assert "-t" in build_line and expected_image in build_line
+    # Volume names keep the raw basename (legal msb volume names).
+    assert "tau-persist-.dotproj-" in run_line
+    assert "tau-sessions-.dotproj-" in run_line
+    assert "tau-logs-.dotproj-" in run_line
+
+
+def test_dot_directory_without_packages_keeps_raw_volume_names(tmp_path):
+    """A dot directory without packages boots the shared base image and its
+    volume names keep the raw basename, pinning the working no-package path
+    for dot directories."""
+    project = tmp_path / ".dotproj"
+    project.mkdir()
+    (project / ".env").write_text("")
+
+    result, msb_log, _ = invoke_run("bash", cwd=project)
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+    assert "tau-persist-.dotproj-" in run_line
+    assert "tau-sessions-.dotproj-" in run_line
+    assert "tau-logs-.dotproj-" in run_line
+
+
+def test_uppercase_directory_image_name_is_lowercased(tmp_path):
+    """Uppercase basenames are illegal in OCI references: the image name is
+    lowercased while the volume name keeps the raw (legal) basename, so
+    existing state of working uppercase-named projects stays put."""
+    project = tmp_path / "MyProject"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+
+    rc, output, msb_log, _ = invoke_run_tty(cwd=project, answer="y\n")
+    assert rc == 0, f"output: {output}"
+
+    expected_image = f"tau-agent-isolated-myproject-{_base_hash()}-{pkg_hash}"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"localhost/{expected_image}:latest -- bash" in run_line
+    assert "tau-persist-MyProject-" in run_line
+
+
+def test_space_directory_names_are_sanitized(tmp_path):
+    """A space is illegal in both msb volume names and OCI references, so
+    both derived name families use the sanitized basename."""
+    project = tmp_path / "my project"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+
+    rc, output, msb_log, _ = invoke_run_tty(cwd=project, answer="y\n")
+    assert rc == 0, f"output: {output}"
+
+    expected_image = f"tau-agent-isolated-my_project-{_base_hash()}-{pkg_hash}"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"localhost/{expected_image}:latest -- bash" in run_line
+    assert "tau-persist-my_project-" in run_line
+    assert "tau-sessions-my_project-" in run_line
+    assert "tau-logs-my_project-" in run_line
+
+
+def test_dot_directory_rebuild_prunes_superseded_images(tmp_path):
+    """Pruning must match the sanitized image name: the legacy and stale
+    base tags of the dot-directory project's package content are removed
+    while other package hashes (same-image-name sibling) are kept."""
+    project = tmp_path / ".dotproj"
+    project.mkdir()
+    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    name = "dotproj"  # sanitized image name
+    legacy_current = f"localhost/tau-agent-isolated-{name}-{pkg_hash}:latest"
+    stale_base = f"localhost/tau-agent-isolated-{name}-00000000-{pkg_hash}:latest"
+    sibling = f"localhost/tau-agent-isolated-{name}-deadbeef-ffffffff:latest"
+
+    rc, output, msb_log, _ = invoke_run_tty(
+        cwd=project, answer="y\n", images=(legacy_current, stale_base, sibling),
+    )
+    assert rc == 0, f"output: {output}"
+    current = f"localhost/tau-agent-isolated-{name}-{_base_hash()}-{pkg_hash}:latest"
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"{current} -- bash" in run_line
+    rmi_lines = {line for line in msb_log if line.startswith("msb rmi")}
+    assert rmi_lines == {f"msb rmi {legacy_current}", f"msb rmi {stale_base}"}
+
+
 def test_current_package_image_skips_build_and_prune(tmp_path):
     """An up-to-date cached package image (current base and package hashes)
     boots directly: no podman build, no rmi. Locks the reuse guarantee and

@@ -58,7 +58,7 @@ libffi
 
 Projects without `.tau-packages` use the shared base image — zero overhead.
 
-**Security:** Every change to `.tau-packages` requires explicit user approval before the image is rebuilt. The agent can write `.tau-packages` but cannot bypass the approval gate. Non-interactive mode (pipes, CI) refuses to rebuild without approval. The same gate covers base updates: per-project images embed a hash of the base inputs, so rebuilding the sandbox base invalidates them and the next interactive run asks for approval again. Rebuilds prune superseded images of the current package content from the microsandbox cache; images of other package contents (same-basename projects, earlier `.tau-packages` contents) are kept.
+**Security:** Every change to `.tau-packages` requires explicit user approval before the image is rebuilt. The agent can write `.tau-packages` but cannot bypass the approval gate. Non-interactive mode (pipes, CI) refuses to rebuild without approval. The same gate covers base updates: per-project images embed a hash of the base inputs, so rebuilding the sandbox base invalidates them and the next interactive run asks for approval again. Rebuilds prune superseded images of the current package content from the microsandbox cache; images of other package contents (same-image-name projects, earlier `.tau-packages` contents) are kept.
 
 **Override:** Set `TAU_IMAGE=my-image-ref` to bypass `.tau-packages` and automatic image management entirely and use a specific image (load it yourself, e.g. `make build`).
 

@@ -8,11 +8,13 @@ Defines the behavioral requirements for the Tau coding agent sandbox: a per-proj
 
 ### Requirement: Per-project persistent state
 
-For a project at resolved path `<path>`, `run.sh` SHALL use the first eight hexadecimal characters of the SHA-256 of `<path>` (including the shell `echo` newline) and the project basename to derive:
+For a project at resolved path `<path>`, `run.sh` SHALL use the first eight hexadecimal characters of the SHA-256 of `<path>` (including the shell `echo` newline) and the project volume name to derive:
 
-- `tau-persist-<basename>-<hash>` mounted at `/home/tau`
-- `tau-sessions-<basename>-<hash>` mounted at `/var/lib/tau-sandbox/sessions` and linked from `/home/tau/.tau/sessions`
-- `tau-logs-<basename>-<hash>` mounted at `/var/lib/tau-sandbox/logs` and linked from `/home/tau/.tau/logs`
+- `tau-persist-<volume-name>-<hash>` mounted at `/home/tau`
+- `tau-sessions-<volume-name>-<hash>` mounted at `/var/lib/tau-sandbox/sessions` and linked from `/home/tau/.tau/sessions`
+- `tau-logs-<volume-name>-<hash>` mounted at `/var/lib/tau-sandbox/logs` and linked from `/home/tau/.tau/logs`
+
+The project volume name SHALL be the project basename when it is a legal msb volume name (non-empty, only `[A-Za-z0-9._-]`, at most 233 characters so the full volume name fits a 255-byte path component), and otherwise the sanitized basename. The sanitized basename SHALL be the lowercase form in which every run of characters outside `[a-z0-9]` is replaced by a single `_`, with leading and trailing `_` removed and the result truncated to 218 characters; an empty result SHALL become `project`. Uniqueness SHALL be carried by `<hash>`, so sanitization may map distinct basenames to the same name.
 
 #### Scenario: State survives separate runs
 
@@ -188,8 +190,9 @@ The sandbox SHALL:
 
 ### Requirement: Per-project package declarations
 
-For this requirement, a `.tau-packages` file is non-empty when it declares at least one package name after stripping comments, blank lines, and surrounding whitespace. A non-empty `.tau-packages` file SHALL select image `tau-agent-isolated-<basename>-<base-hash>-<package-hash>`, where:
+For this requirement, a `.tau-packages` file is non-empty when it declares at least one package name after stripping comments, blank lines, and surrounding whitespace. A non-empty `.tau-packages` file SHALL select image `tau-agent-isolated-<image-name>-<base-hash>-<package-hash>`, where:
 
+- `<image-name>` is the project basename when `tau-agent-isolated-<basename>-<8 hex>-<8 hex>` is a legal OCI reference path component (lowercase `[a-z0-9._-]` with no adjacent separators, at most 255 characters), and otherwise the sanitized basename;
 - `<package-hash>` is derived from the raw bytes of `.tau-packages`;
 - `<base-hash>` is the first eight hexadecimal characters of the SHA-256 of the text formed by concatenating, in lexicographic path order, the hex-encoded SHA-256 digests (64 lowercase hex characters, no separators) of the raw bytes of each regular file directly under `config/` (including dotfiles), preceded by the digest of the repository `Containerfile`. It SHALL change when the content, or set, of those files changes and SHALL be stable when none does. Non-regular entries under `config/` SHALL be ignored.
 
@@ -264,9 +267,9 @@ Comment-only and empty files SHALL use the shared base image.
 
 ### Requirement: Superseded package images are pruned
 
-Package image tags are keyed by basename, base hash, and package hash, so same-basename projects share one tag namespace: projects with identical base inputs and identical `.tau-packages` content use the same tag, while different package contents produce different tags under the same basename prefix.
+Package image tags are keyed by image name, base hash, and package hash, so same-image-name projects share one tag namespace: projects with identical base inputs and identical `.tau-packages` content use the same tag, while different package contents produce different tags under the same image-name prefix.
 
-When the launcher builds a package-specific image, it SHALL remove from the microsandbox cache every other image whose reference is `localhost/tau-agent-isolated-<basename>-<package-hash>:latest` (legacy single-hash form of the current package content) or `localhost/tau-agent-isolated-<basename>-<8 hex>-<package-hash>:latest` (any base version of the current package content). It SHALL NOT remove the image it just loaded. Inherent to the shared tag namespace, an image carrying the current package hash at another base hash is removed whether this project or a same-basename project with identical `.tau-packages` content produced it. Images tagged with any other package hash — including those of same-basename projects with different `.tau-packages` content and those of earlier package contents of this project — SHALL NOT be removed; in particular, a legacy single-hash tag whose hash differs from the current package hash SHALL NOT be removed. A failed removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be reported as an error.
+When the launcher builds a package-specific image, it SHALL remove from the microsandbox cache every other image whose reference is `localhost/tau-agent-isolated-<image-name>-<package-hash>:latest` (legacy single-hash form of the current package content) or `localhost/tau-agent-isolated-<image-name>-<8 hex>-<package-hash>:latest` (any base version of the current package content). It SHALL NOT remove the image it just loaded. Inherent to the shared tag namespace, an image carrying the current package hash at another base hash is removed whether this project or a same-image-name project with identical `.tau-packages` content produced it. Images tagged with any other package hash — including those of same-image-name projects with different `.tau-packages` content and those of earlier package contents of this project — SHALL NOT be removed; in particular, a legacy single-hash tag whose hash differs from the current package hash SHALL NOT be removed. A failed removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be reported as an error.
 
 #### Scenario: Base-triggered rebuild removes the superseded image
 
@@ -288,9 +291,9 @@ When the launcher builds a package-specific image, it SHALL remove from the micr
 - WHEN the launcher rebuilds the package image
 - THEN that image SHALL remain in the cache
 
-#### Scenario: Same-basename projects keep their package images
+#### Scenario: Same-image-name projects keep their package images
 
-- GIVEN two projects with the same basename and different `.tau-packages` contents both have cached package images
+- GIVEN two projects with the same image name and different `.tau-packages` contents both have cached package images
 - WHEN the launcher rebuilds the package image for one of them
 - THEN the other project's image SHALL remain in the cache
 
