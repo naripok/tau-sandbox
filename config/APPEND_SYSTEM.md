@@ -31,6 +31,12 @@ Host Tau config symlinks are dereferenced into temporary snapshots before mounti
 - Microsandbox's `restricted` profile drops capabilities, enables no-new-privileges, and hardens mounts.
 - Image binaries have setuid and setgid bits removed.
 
+## Secrets
+
+Host variables reach the VM in two forms. Ordinary forwarded variables carry their real values into the guest environment; protected project-secret variables appear in the guest only as runtime placeholders of the form `$MSB_<NAME>`.
+
+`env` shows the placeholder, never the real protected value. No guest command, file read, or environment inspection can reveal a protected value: it is substituted by the sandbox runtime only for requests to the destinations and request locations that secret's policy allows. Use a protected variable normally when building an HTTP(S) request (header, basic-auth, or query-parameter position) and let the runtime substitute it; do not attempt to print, log, or copy the real value.
+
 ## Tools and dependencies
 
 - **Languages:** Python, pip, uv, Node.js, npm
@@ -49,7 +55,7 @@ The next run requires user approval before building the package-specific image. 
 ## Network and resources
 
 - Outbound internet and DNS are enabled. Only exact hosts allowlisted through the host-side `TAU_LAN_HOSTS` variable are reachable on the private network (forward it in the host env file so the agent can see the list); all other private-network addresses are blocked. Inbound connections are blocked because no ports are published, and the host is not reachable through guest `localhost`.
-- Variables from the host env file are forwarded into the VM; use `env` to inspect them.
+- Variables from the host env file are forwarded into the VM; ordinary ones keep their real values and are visible with `env`, while protected project-secret variables appear only as `$MSB_<NAME>` placeholders (see Secrets above).
 - Defaults are 4 vCPUs, 8 GB memory, and 1024 processes; `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` override them.
 
 ## System prompt

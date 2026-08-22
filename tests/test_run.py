@@ -8,6 +8,7 @@ import hashlib
 import os
 import pathlib
 import pty
+import re
 import select
 import shutil
 import subprocess
@@ -31,11 +32,12 @@ def _fake_bin(tmp: pathlib.Path):
     return fake_bin, msb_log, podman_log, images_file
 
 
-def _fake_env(tmp: pathlib.Path, cwd, fake_bin, msb_log, podman_log, images_file, env):
+def _fake_env(tmp: pathlib.Path, cwd, fake_bin, msb_log, podman_log, images_file, env, home=None):
     fake_env = os.environ.copy()
     fake_env["PATH"] = f"{fake_bin}:{fake_env['PATH']}"
-    # HOME follows the project dir so tests write ~/.env|~/.tau next to cwd.
-    fake_env["HOME"] = str(cwd or tmp)
+    # HOME follows the project dir so tests write ~/.env|~/.tau next to cwd;
+    # secret-launch tests pass an explicit home hosting the project pair.
+    fake_env["HOME"] = str(home) if home is not None else str(cwd or tmp)
     fake_env["MSB_LOG"] = str(msb_log)
     fake_env["PODMAN_LOG"] = str(podman_log)
     fake_env["MSB_IMAGES"] = str(images_file)
@@ -64,6 +66,7 @@ def _stub_repo(tmp: pathlib.Path, name: str, containerfile=True, config=True) ->
     repo = tmp / name
     repo.mkdir()
     shutil.copy(REPO_ROOT / "run.sh", repo / "run.sh")
+    shutil.copytree(REPO_ROOT / "lib", repo / "lib")
     if containerfile:
         shutil.copy(REPO_ROOT / "Containerfile", repo / "Containerfile")
     if config:
@@ -72,6 +75,35 @@ def _stub_repo(tmp: pathlib.Path, name: str, containerfile=True, config=True) ->
 
 FAKE_MSB = """#!/bin/bash
 echo "msb $*" >> "$MSB_LOG"
+[ -n "${MSB_PATH_LOG:-}" ] && printf '%s\n' "$0" >> "$MSB_PATH_LOG"
+if [ "$1" = "--version" ]; then
+    printf '%s\n' "${MSB_VERSION:-msb 0.6.12}"
+    exit 0
+fi
+if [ "$1" = "run" ] && [ -n "${MSB_SECRET_TRACE:-}" ]; then
+    conf=""; prev=""
+    for arg in "$@"; do
+        [ "$prev" = "--secret-conf" ] && conf="$arg"
+        prev="$arg"
+    done
+    if [ -n "$conf" ]; then
+        {
+            printf 'staging|%s\n' "$(dirname "$conf")"
+            printf 'BEGIN_CONF\n'
+            cat "$conf"
+            printf 'END_CONF\n'
+            env | grep '^TAU_SANDBOX_SECRET_SOURCE_' || true
+        } >> "$MSB_SECRET_TRACE"
+    fi
+fi
+if [ "$1" = "run" ] && [ "${MSB_REFLECT:-0}" = "1" ]; then
+    # Simulated guest/service data: a response reflecting a substituted
+    # value. This is deliberately outside the launcher's causal boundary.
+    env | sed -n 's/^TAU_SANDBOX_SECRET_SOURCE_[0-9]*=/REFLECTED_RESPONSE=/p' | head -n 1
+fi
+if [ "$1" = "run" ] && [ -n "${MSB_RUN_STATUS:-}" ]; then
+    exit "$MSB_RUN_STATUS"
+fi
 if [ "$1" = "run" ] && [ -n "${MSB_SNAPSHOT_CHECK:-}" ]; then
     for arg in "$@"; do
         case "$arg" in
@@ -104,19 +136,20 @@ exit 0
 """
 
 
-def invoke_run(*args, env=None, cwd=None, images=(), script=REPO_ROOT / "run.sh"):
+def invoke_run(*args, env=None, cwd=None, images=(), script=REPO_ROOT / "run.sh", home=None):
     """Run run.sh non-interactively (no TTY) with fake msb/podman.
 
     script selects which run.sh copy to execute; tests use a stub repo
     copy to exercise base-input handling without touching the real repo.
-    Returns (result, msb_log_lines, podman_log_lines).
+    home overrides $HOME (secret-launch tests host the project pair
+    there). Returns (result, msb_log_lines, podman_log_lines).
     """
     import tempfile
 
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="tau-run-test-"))
     fake_bin, msb_log, podman_log, images_file = _fake_bin(tmp)
     images_file.write_text("\n".join(images) + ("\n" if images else ""))
-    fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env)
+    fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env, home=home)
 
     result = subprocess.run(
         [str(script), *args],
@@ -134,19 +167,19 @@ def invoke_run(*args, env=None, cwd=None, images=(), script=REPO_ROOT / "run.sh"
     return result, _lines(msb_log), _lines(podman_log)
 
 
-def invoke_run_tty(cwd, env=None, answer="y\n", images=(), script=REPO_ROOT / "run.sh"):
+def invoke_run_tty(cwd, env=None, answer="y\n", images=(), script=REPO_ROOT / "run.sh", home=None):
     """Run run.sh in a pseudo-terminal and answer the package approval
     prompt. Returns (returncode, all_output).
 
     Needed because run.sh only builds per-project package images after an
-    explicit interactive approval.
+    explicit interactive approval. home overrides $HOME.
     """
     import tempfile
 
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="tau-run-tty-"))
     fake_bin, msb_log, podman_log, images_file = _fake_bin(tmp)
     images_file.write_text("\n".join(images) + ("\n" if images else ""))
-    fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env)
+    fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env, home=home)
     fake_env["TERM"] = "xterm"
 
     master, slave = pty.openpty()
@@ -872,3 +905,405 @@ def test_shared_base_image_used_without_packages(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+
+
+# --- Project-secret integration (present-pair launches through run.sh) ---
+#
+# These tests prove run.sh integrates lib/project-secrets.sh with the exact
+# lifecycle ordering: discovery and exposure preflight before any image,
+# environment, snapshot, or mount work; a pinned absolute runtime for every
+# present-pair msb operation; one shared bootstrap entry list driving both
+# the security scan and the snapshot copies; and the library-owned
+# --secret-conf as the only secret argument of the final invocation.
+
+BASE_IMAGE = "localhost/tau-agent-isolated:latest"
+DUMMY_VALUE = "dummy-value-123"
+DEFAULT_YAML = "KEY:\n  allow:\n    - api.example.com\n"
+
+
+def make_secret_project(tmp_path, project="proj", env_text=None, yaml_text=None):
+    """A present-pair home: HOME/Projects/<project> is the launch directory
+    and HOME/.<project> holds the exact mapped source pair."""
+    home = tmp_path / "home"
+    proj = home / "Projects" / project
+    proj.mkdir(parents=True, exist_ok=True)
+    secret = home / f".{project}"
+    secret.mkdir(exist_ok=True)
+    (secret / "secrets.env").write_text(
+        env_text if env_text is not None else f"KEY={DUMMY_VALUE}\n"
+    )
+    (secret / "secrets.yaml").write_text(
+        yaml_text if yaml_text is not None else DEFAULT_YAML
+    )
+    return home, proj, secret
+
+
+def _secret_run_line(msb_log):
+    """The final runtime invocation of a present-pair launch: the library
+    inserts --secret-conf immediately after `run`, so its presence is the
+    observable marker of an active pair."""
+    return next((line for line in msb_log if line.startswith("msb run --secret-conf")), None)
+
+
+def test_reset_bypasses_invalid_sources_and_incompatible_runtime(tmp_path):
+    """--reset must remove the per-project volumes and exit without any
+    project-secret work: invalid secret sources and an incompatible runtime
+    must not block it, and no version or secret call may run. This pins the
+    reset-before-discovery ordering: a user must always be able to clean up
+    even when the pair is broken."""
+    home, proj, secret = make_secret_project(tmp_path)
+    (secret / "secrets.env").unlink()
+    (secret / "secrets.env").mkdir()  # invalid source type
+    result, msb_log, podman_log = invoke_run(
+        "--reset", cwd=proj, home=home, env={"MSB_VERSION": "msb 0.5.0"}
+    )
+    assert result.returncode == 0
+    assert "Volumes tau-persist-proj-" in result.stdout
+    assert len(msb_log) == 1
+    assert msb_log[0].startswith("msb volume rm tau-persist-proj-")
+    assert "tau-sessions-proj-" in msb_log[0]
+    assert "tau-logs-proj-" in msb_log[0]
+    assert not any("--version" in line for line in msb_log)
+    assert not podman_log
+
+
+def test_root_outside_relative_and_nested_mapping_contract(tmp_path):
+    """Every exact mapping scenario through the launcher: the default root,
+    exact nested mapping without inheritance, explicit absolute and relative
+    TAU_PROJECTS_DIR roots, launches outside the root, an absent default
+    root, and the invalid explicitly-empty override. The --secret-conf
+    marker distinguishes present pairs from secret-free launches."""
+    home, proj, secret = make_secret_project(tmp_path)
+    # Default root: the exact hidden home directory maps the project.
+    result, msb_log, _ = invoke_run("bash", cwd=proj, home=home, images=(BASE_IMAGE,))
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is not None
+    # A nested launch does not inherit: only the exact nested pair counts.
+    nested = proj / "sub"
+    nested.mkdir()
+    result, msb_log, _ = invoke_run("bash", cwd=nested, home=home, images=(BASE_IMAGE,))
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is None
+    # The exact nested hidden directory tree maps the nested launch.
+    nested_secret = home / ".proj" / "sub"
+    nested_secret.mkdir(parents=True)
+    (nested_secret / "secrets.env").write_text(f"KEY={DUMMY_VALUE}\n")
+    (nested_secret / "secrets.yaml").write_text(DEFAULT_YAML)
+    result, msb_log, _ = invoke_run("bash", cwd=nested, home=home, images=(BASE_IMAGE,))
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is not None
+    # An explicit absolute root changes the mapping.
+    root2 = tmp_path / "root2"
+    (root2 / "proj").mkdir(parents=True)
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=root2 / "proj", home=home, images=(BASE_IMAGE,),
+        env={"TAU_PROJECTS_DIR": str(root2)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is not None
+    # A relative explicit root resolves from the launch directory.
+    root3 = tmp_path / "root3"
+    (root3 / "proj").mkdir(parents=True)
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=root3 / "proj", home=home, images=(BASE_IMAGE,),
+        env={"TAU_PROJECTS_DIR": ".."},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is not None
+    # A launch outside the root has no secrets.
+    outside = home / "work"
+    outside.mkdir()
+    result, msb_log, _ = invoke_run("bash", cwd=outside, home=home, images=(BASE_IMAGE,))
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is None
+    # An absent default root disables discovery.
+    home2 = tmp_path / "home2"
+    (home2 / "work").mkdir(parents=True)
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=home2 / "work", home=home2, images=(BASE_IMAGE,)
+    )
+    assert result.returncode == 0, result.stderr
+    assert _secret_run_line(msb_log) is None
+    # An explicitly empty TAU_PROJECTS_DIR is invalid.
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
+        env={"TAU_PROJECTS_DIR": ""},
+    )
+    assert result.returncode == 1
+    assert "invalid-TAU_PROJECTS_DIR" in result.stderr
+    assert not any(line.startswith("msb run") for line in msb_log)
+
+
+def test_exposure_preflight_precedes_images_build_env_snapshot_mounts(tmp_path):
+    """An exposure violation must abort before `msb images`, Podman, env-file
+    sourcing, snapshot creation, and mount construction: no observable call
+    may happen first. On a clean launch the version gate runs before any
+    image work, proving the same ordering positively."""
+    home, proj, secret = make_secret_project(tmp_path)
+    tau = home / ".tau"
+    tau.mkdir()
+    (tau / "evil").symlink_to(secret, target_is_directory=True)
+    env_file = tmp_path / "evil.env"
+    marker = tmp_path / "sourced-marker"
+    env_file.write_text(f"touch {marker}\n")
+
+    result, msb_log, podman_log = invoke_run(
+        "bash", cwd=proj, home=home, env={"TAU_ENV_FILE": str(env_file)}
+    )
+    assert result.returncode == 1
+    assert "exposure-" in result.stderr
+    assert msb_log == []
+    assert podman_log == []
+    assert not marker.exists()
+
+    # Without the violation the same launch runs the whole pipeline, with
+    # the version gate first and the environment file sourced afterwards.
+    (tau / "evil").unlink()
+    result, msb_log, podman_log = invoke_run(
+        "bash", cwd=proj, home=home, env={"TAU_ENV_FILE": str(env_file)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert marker.exists()
+    assert msb_log[0] == "msb --version"
+    assert any(line.startswith("msb images -q") for line in msb_log)
+    assert any(line.startswith("podman build") for line in podman_log)
+    assert _secret_run_line(msb_log) is not None
+
+
+def test_incompatible_runtime_precedes_empty_or_malformed_content(tmp_path):
+    """An incompatible runtime must fail before any content is parsed: the
+    error is the runtime class, never the empty/malformed content class, and
+    the only runtime process is the single --version check."""
+    for index, (env_text, content_class) in enumerate((("", "policy-empty"), ("KEY\n", "value-malformed-entry"))):
+        base = tmp_path / f"case{index}"
+        home, proj, secret = make_secret_project(
+            base, env_text=env_text, yaml_text=DEFAULT_YAML
+        )
+        result, msb_log, podman_log = invoke_run(
+            "bash", cwd=proj, home=home, env={"MSB_VERSION": "msb 0.5.0"}
+        )
+        assert result.returncode == 1
+        assert "incompatible-runtime" in result.stderr
+        assert content_class not in result.stderr
+        assert msb_log == ["msb --version"]
+        assert not podman_log
+
+
+def test_no_pair_preserves_existing_invocation_and_old_runtime(tmp_path):
+    """A no-pair launch keeps the exact existing msb invocation shape and
+    never applies the version or secret configuration gates: an incompatible
+    runtime must not block a secret-free launch (regression)."""
+    home, proj, secret = make_secret_project(tmp_path)
+    outside = home / "work"
+    outside.mkdir()
+    (home / ".env").write_text("ORD=1\n")
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=outside, home=home, images=(BASE_IMAGE,),
+        env={"MSB_VERSION": "msb 0.5.0"},
+    )
+    assert result.returncode == 0, result.stderr
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert "--secret-conf" not in run_line
+    assert not any("--version" in line for line in msb_log)
+    assert "-e ORD=1" in run_line
+    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+
+
+def test_present_pair_uses_pinned_msb_for_images_load_rmi_and_run(tmp_path):
+    """Every present-pair msb operation (images, load, rmi, run) uses the
+    pinned absolute executable: an ambient msb made reachable through a
+    sourced PATH change receives no operation at all."""
+    home, proj, secret = make_secret_project(tmp_path)
+    pkg_file = proj / ".tau-packages"
+    pkg_file.write_text("cmake\n")
+    pkg_hash = hashlib.sha256(pkg_file.read_bytes()).hexdigest()[:8]
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    ambient_log = tmp_path / "ambient.log"
+    (ambient / "msb").write_text(
+        "#!/bin/bash\n"
+        f'printf \'%s\\n\' "ambient $*" >> "{ambient_log}"\n'
+        "exit 0\n"
+    )
+    (ambient / "msb").chmod(0o755)
+    (home / ".env").write_text(f"export PATH={ambient}:$PATH\n")
+    path_log = tmp_path / "msb-paths.log"
+    name = "proj"
+    legacy = f"localhost/tau-agent-isolated-{name}-{pkg_hash}:latest"
+    stale = f"localhost/tau-agent-isolated-{name}-00000000-{pkg_hash}:latest"
+
+    rc, output, msb_log, podman_log = invoke_run_tty(
+        cwd=proj, home=home, images=(legacy, stale),
+        env={"MSB_PATH_LOG": str(path_log)},
+    )
+    assert rc == 0, f"output: {output}"
+    # The ambient replacement received no operation.
+    assert not ambient_log.exists() or ambient_log.read_text() == ""
+    # Every operation ran through one pinned absolute executable.
+    assert any(line.startswith("msb images -q") for line in msb_log)
+    assert any(line.startswith("msb load") for line in msb_log)
+    assert {line for line in msb_log if line.startswith("msb rmi")} == {
+        f"msb rmi {legacy}",
+        f"msb rmi {stale}",
+    }
+    run_line = _secret_run_line(msb_log)
+    assert run_line is not None
+    paths = path_log.read_text().splitlines()
+    assert paths
+    assert len(paths) == len(msb_log)
+    assert len(set(paths)) == 1
+    assert paths[0].endswith("/msb")
+    assert paths[0] != str(ambient / "msb")
+
+
+def test_shared_bootstrap_entry_list_drives_scan_and_snapshot(tmp_path):
+    """One captured entry list drives both the exposure scan and the
+    snapshot copies: excluded entries are neither scanned nor snapshotted
+    (a symlinked `sessions` entry to the secret directory neither aborts the
+    launch nor leaks into the mounts), while a nested link inside a
+    registered entry is scanned and rejects before any snapshot or mount
+    work — the two enumerations cannot diverge."""
+    home, proj, secret = make_secret_project(tmp_path)
+    tau = home / ".tau"
+    skills = tau / "skills"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("# skill\n")
+    (tau / "sessions").symlink_to(secret, target_is_directory=True)
+    (tau / "logs").mkdir()
+    (tau / "trust.json").write_text("{}\n")
+    (tau / "credentials.json").write_text("{}\n")
+
+    result, msb_log, _ = invoke_run("bash", cwd=proj, home=home, images=(BASE_IMAGE,))
+    assert result.returncode == 0, result.stderr
+    run_line = _secret_run_line(msb_log)
+    bootstrap = "/etc/tau-sandbox/bootstrap/tau"
+    assert f":{bootstrap}/skills:ro" in run_line
+    assert f":{bootstrap}/sessions" not in run_line
+    assert f":{bootstrap}/logs" not in run_line
+    assert f":{bootstrap}/trust.json" not in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
+
+    # A nested link inside a registered entry aliases the value source: the
+    # shared scan rejects it before any image, snapshot, or mount work.
+    (skills / "evil").symlink_to(secret / "secrets.env")
+    result, msb_log, podman_log = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,)
+    )
+    assert result.returncode == 1
+    assert "exposure-alias" in result.stderr
+    assert msb_log == []
+    assert not podman_log
+
+
+def test_generated_secret_conf_is_only_secret_argument(tmp_path):
+    """The final invocation carries exactly one --secret-conf, inserted by
+    the library immediately after `run`, with the staging path under /tmp;
+    values, synthetic source names, and raw guest -e forwarding of the
+    secret name are absent, and the guest argv after `--` is preserved."""
+    home, proj, secret = make_secret_project(tmp_path)
+    result, msb_log, _ = invoke_run(
+        "tau", "-p", "hello", cwd=proj, home=home, images=(BASE_IMAGE,)
+    )
+    assert result.returncode == 0, result.stderr
+    run_line = _secret_run_line(msb_log)
+    assert run_line is not None
+    assert run_line.count("--secret-conf") == 1
+    assert re.match(
+        r"^msb run --secret-conf /tmp/project-secrets\.[^/]+/secrets\.conf ", run_line
+    )
+    assert DUMMY_VALUE not in run_line
+    assert "TAU_SANDBOX_SECRET_SOURCE" not in run_line
+    assert "-e KEY=" not in run_line
+    assert run_line.endswith("-- tau -p hello")
+
+
+def test_same_name_suppresses_raw_forwarding_but_unrelated_forwards(tmp_path):
+    """An ordinary env-file name matching a project secret is omitted from
+    raw -e forwarding (the protected source supplies the guest value), while
+    an unrelated ordinary name forwards normally — and neither value ever
+    appears in launcher output, Podman arguments, or image inputs."""
+    home, proj, secret = make_secret_project(tmp_path)
+    env_file = home / ".env"
+    env_file.write_text("KEY=ordinary-value\nOTHER_KEY=other-value\n")
+    result, msb_log, podman_log = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,)
+    )
+    assert result.returncode == 0, result.stderr
+    run_line = _secret_run_line(msb_log)
+    assert run_line is not None
+    assert "-e KEY=ordinary-value" not in run_line
+    assert "-e OTHER_KEY=other-value" in run_line
+    for channel in (result.stdout, result.stderr, *podman_log):
+        assert "ordinary-value" not in channel
+        assert "other-value" not in channel
+        assert DUMMY_VALUE not in channel
+    for line in msb_log:
+        if line is not run_line:
+            assert DUMMY_VALUE not in line
+            assert "ordinary-value" not in line
+
+
+def test_relative_env_file_works_with_present_pair(tmp_path):
+    """A caller-supplied relative TAU_ENV_FILE is resolved against the
+    launch directory before the alias check and the POSIX-mode `source`,
+    so a present pair forwards it exactly like a no-pair launch would.
+
+    present-pair launches source under `set -o posix`, where `source`
+    looks up slash-less names through PATH only and would fail on a
+    relative path; absolutizing keeps the ordinary-env contract identical
+    across pair states."""
+    home, proj, secret = make_secret_project(tmp_path)
+    (proj / "rel.env").write_text("RELATIVE_KEY=relative-value\n")
+    result, msb_log, _ = invoke_run(
+        "bash",
+        cwd=proj,
+        home=home,
+        images=(BASE_IMAGE,),
+        env={"TAU_ENV_FILE": "rel.env"},
+    )
+    assert result.returncode == 0, result.stderr
+    run_line = _secret_run_line(msb_log)
+    assert run_line is not None
+    assert "-e RELATIVE_KEY=relative-value" in run_line
+    for channel in (result.stdout, result.stderr):
+        assert "relative-value" not in channel
+
+
+def test_cleanup_after_runtime_success_and_failure(tmp_path):
+    """Both launcher-owned cleanup targets — the project-secret staging
+    directory and the bootstrap snapshot — are removed after the runtime
+    exits, on success and on failure, while the runtime's exit status is
+    preserved."""
+    home, proj, secret = make_secret_project(tmp_path)
+    # A bootstrap config entry gives the launcher a snapshot to clean up.
+    tau = home / ".tau"
+    tau.mkdir()
+    (tau / "settings.json").write_text("{}\n")
+    trace = tmp_path / "trace-success"
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
+        env={"MSB_SECRET_TRACE": str(trace)},
+    )
+    assert result.returncode == 0, result.stderr
+    staging = pathlib.Path(trace.read_text().splitlines()[0].split("|", 1)[1])
+    bootstrap = _bootstrap_stage_path(_secret_run_line(msb_log))
+    assert not staging.exists()
+    assert not bootstrap.exists()
+
+    trace = tmp_path / "trace-failure"
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
+        env={"MSB_SECRET_TRACE": str(trace), "MSB_RUN_STATUS": "3"},
+    )
+    assert result.returncode == 3
+    staging = pathlib.Path(trace.read_text().splitlines()[0].split("|", 1)[1])
+    bootstrap = _bootstrap_stage_path(_secret_run_line(msb_log))
+    assert not staging.exists()
+    assert not bootstrap.exists()
+
+
+def _bootstrap_stage_path(run_line):
+    """The bootstrap snapshot directory the runtime invocation mounted."""
+    match = re.search(r"-v (/[^ ]*tau-sandbox-bootstrap\.[^/ ]*)/", run_line)
+    assert match, run_line
+    return pathlib.Path(match.group(1))

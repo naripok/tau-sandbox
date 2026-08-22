@@ -1,202 +1,27 @@
-# Tau Sandbox Specification
+# Spec: Project Secret Injection
 
-## Purpose
+## Domain: Sandbox Launch
 
-Defines the behavioral requirements for the Tau coding agent sandbox: a per-project, hardware-isolated microVM built on microsandbox. The sandbox gives Tau a working coding environment while limiting host access to explicit mounts and isolating durable agent state by project.
+### ADDED Requirements
 
-## Requirements
-
-### Requirement: Per-project persistent state
-
-For a project at resolved path `<path>`, `run.sh` SHALL use the first eight hexadecimal characters of the SHA-256 of `<path>` (including the shell `echo` newline) and the project volume name to derive:
-
-- `tau-persist-<volume-name>-<hash>` mounted at `/home/tau`
-- `tau-sessions-<volume-name>-<hash>` mounted at `/var/lib/tau-sandbox/sessions` and linked from `/home/tau/.tau/sessions`
-- `tau-logs-<volume-name>-<hash>` mounted at `/var/lib/tau-sandbox/logs` and linked from `/home/tau/.tau/logs`
-
-The project volume name SHALL be the project basename when it is a legal msb volume name (non-empty, only `[A-Za-z0-9._-]`, at most 233 characters so the full volume name fits a 255-byte path component), and otherwise the sanitized basename. The sanitized basename SHALL be the lowercase form in which every run of characters outside `[a-z0-9]` is replaced by a single `_`, with leading and trailing `_` removed and the result truncated to 218 characters; an empty result SHALL become `project`. Uniqueness SHALL be carried by `<hash>`, so sanitization may map distinct basenames to the same name.
-
-#### Scenario: State survives separate runs
-
-- GIVEN a run writes into the home, session, or log volume
-- WHEN the same project starts another sandbox
-- THEN the written state SHALL remain available
-
-#### Scenario: Projects have distinct state
-
-- GIVEN two different resolved project paths
-- WHEN both launch sandboxes
-- THEN all three derived volume names SHALL differ
-
-### Requirement: Ephemeral microVM filesystems
-
-Each invocation SHALL boot a fresh microVM and discard it when the command exits. The image root SHALL use microsandbox's disposable writable overlay. `/tmp` SHALL be an explicit tmpfs.
-
-#### Scenario: Root and temporary writes disappear
-
-- GIVEN one run writes a file outside persistent mounts or under `/tmp`
-- WHEN a second run starts
-- THEN the file SHALL NOT exist
-
-### Requirement: Workspace bind mount
-
-The current directory SHALL be mounted read-write at `/workspace` and selected as the guest working directory.
-
-#### Scenario: Host and guest share project changes
-
-- GIVEN a host project file
-- WHEN the guest reads or modifies it under `/workspace`
-- THEN both host and guest SHALL observe the same file
-
-The `/workspace` mount SHALL propagate guest-applied permission bits to the host inode (`host-perms=mirror`): a file or directory created or chmod'd inside the sandbox SHALL keep its rwx bits on the host, so scripts created or modified in the sandbox remain executable on the host and git's exec-bit tracking stays consistent. The mirror SHALL cover only ordinary rwx bits; ownership, file type, and setuid/setgid SHALL NOT be propagated, and an owner-access floor SHALL always apply. All other exports SHALL keep microsandbox's default private metadata policy, which materializes guest-created files as owner-only (`600`/`700`) on the host.
-
-#### Scenario: Sandbox-created files keep their modes on the host
-
-- GIVEN the guest creates a regular file and marks a script executable under `/workspace`
-- WHEN the host inspects the same files
-- THEN the host SHALL observe the same rwx bits the guest set, and a git worktree staged from the guest SHALL stay clean on the host
-
-### Requirement: Project-local config discovery
-
-When `TAU_CONFIG_DIR` is unset, `run.sh` SHALL select as the host Tau config directory the `.tau` entry of the nearest ancestor of the launch directory, where the launch directory itself counts as an ancestor and `.tau` entries are matched as directories with symlinks followed; a dangling `.tau` symlink SHALL NOT match. When no ancestor matches, `${HOME}/.tau` SHALL apply. An explicitly set `TAU_CONFIG_DIR` SHALL take precedence over discovery, and discovery SHALL NOT change the resolved project path used for volume derivation.
-
-#### Scenario: Nearest project root config is discovered
-
-- GIVEN `TAU_CONFIG_DIR` is unset, `<project-root>/.tau` is a directory, and `run.sh` launches from `<project-root>/nested/dir`
-- WHEN the launch proceeds
-- THEN `<project-root>/.tau` SHALL be the host Tau config directory
-
-#### Scenario: Innermost config wins
-
-- GIVEN `.tau` directories at both `<project-root>` and `<project-root>/nested`, and `run.sh` launches from `<project-root>/nested/dir`
-- WHEN the launch proceeds
-- THEN `<project-root>/nested/.tau` SHALL be the host Tau config directory
-
-#### Scenario: Discovered config via root symlink
-
-- GIVEN `<project-root>/.tau` is a symlink to directory `<config-world>` and `TAU_CONFIG_DIR` is unset
-- WHEN `run.sh` launches from a directory under `<project-root>`
-- THEN `<config-world>` SHALL be the host Tau config directory
-
-#### Scenario: No discovery match falls back to the default
-
-- GIVEN no ancestor's `.tau` entry is a directory (absent or a dangling symlink) and `TAU_CONFIG_DIR` is unset
-- WHEN `run.sh` launches
-- THEN `${HOME}/.tau` SHALL be the host Tau config directory
-
-#### Scenario: Explicit override beats discovery
-
-- GIVEN `<project-root>/.tau` is a directory and `TAU_CONFIG_DIR` is set to `<override-dir>`
-- WHEN `run.sh` launches from a directory under `<project-root>`
-- THEN `<override-dir>` SHALL be the host Tau config directory
-
-### Requirement: Host Tau config synchronizes into writable project config
-
-When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be copied to a temporary host-side snapshot and mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, trust-store files, and synchronization metadata. Symlinks SHALL be recursively dereferenced while creating the snapshot, allowing linked skills, extensions, and other config at any depth to synchronize without exposing broken host-absolute links inside the guest. Dangling symlinks SHALL fail startup, and special files SHALL be ignored:
-
-- Host `sessions` and `logs` SHALL NOT be mounted.
-- Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
-- The isolated session and log volumes SHALL be mounted under `/var/lib/tau-sandbox/` and linked from their normal Tau paths.
-- When host `credentials.json` exists, it SHALL be mounted read-write at `/etc/tau-sandbox/shared/credentials.json` and linked from `/home/tau/.tau/credentials.json`.
-- The host config directory itself SHALL NOT be mounted read-write.
-
-Microsandbox SHALL NOT receive nested mount targets under `/home/tau/.tau`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable Tau directory first and link the external credential, session, and log backing paths into it. A root-owned Tau directory left by the earlier nested-mount layout SHALL be moved aside automatically. Non-empty real session or log directories from that layout SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
-
-On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<name>` with a writable copy of its mounted source. It SHALL track synchronized top-level names and remove a previously synchronized resource when that resource is removed from the host. Project-local entries that were never synchronized from the host SHALL remain persistent. This makes host settings, providers, catalogs, prompts, skills, themes, extensions, and other resources authoritative at startup while preserving host files. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
-
-#### Scenario: Fresh Tau home remains writable
-
-- GIVEN microsandbox is starting a new project with empty persistent volumes
-- WHEN it prepares credential, session, and log mounts before launching UID 1000
-- THEN none of those mount targets SHALL create `/home/tau/.tau`
-- AND the entrypoint SHALL create a writable Tau directory and normal-path links
-
-#### Scenario: Linked host resource seeds writable project state
-
-- GIVEN a symlink within host `~/.tau/skills` targets a directory outside `~/.tau`
-- WHEN the project sandbox starts
-- THEN the target SHALL be dereferenced into the temporary host-side snapshot
-- AND the guest bootstrap and writable config paths SHALL contain an ordinary directory rather than the host symlink
-
-#### Scenario: Host resource seeds writable project state
-
-- GIVEN host `~/.tau/settings.json` exists
-- WHEN the project sandbox starts for the first time
-- THEN Tau SHALL read a copied value from `/home/tau/.tau/settings.json`
-- AND a guest write to that project-local path SHALL succeed
-- AND the host file SHALL remain unchanged
-
-#### Scenario: Host changes synchronize on restart
-
-- GIVEN a sandbox has synchronized and modified its writable project-local copy
-- WHEN the host config changes and the same project starts another sandbox
-- THEN the project-local copy SHALL contain the current host value
-- AND newly added host skills and extensions SHALL be available
-- AND a previously synchronized resource removed from the host SHALL be removed locally
-- AND an entry created only inside the sandbox SHALL remain persistent
-
-#### Scenario: Atomic provider replacement succeeds
-
-- GIVEN host `providers.json` seeded a project-local copy
-- WHEN Tau writes a sibling temporary file and renames it over `/home/tau/.tau/providers.json`
-- THEN the replacement SHALL succeed without `EBUSY`
-- AND host `providers.json` SHALL remain unchanged
-
-#### Scenario: Host history and trust are not exposed
-
-- GIVEN host sessions, logs, and trust-store files contain data
-- WHEN the sandbox starts
-- THEN host sessions, logs, and trust-store files SHALL NOT be mounted as bootstrap sources
-- AND sessions, logs, and trust SHALL use writable per-project state
-
-### Requirement: Writable shared credentials exception
-
-When host `credentials.json` exists, Tau SHALL be able to read and update that same host file so OAuth access and refresh token rotation remain valid outside the sandbox.
-
-Microsandbox file mounts cannot be replaced atomically. The installed Tau wrapper SHALL therefore switch `FileCredentialStore` to a flushed, in-place write only when `TAU_SANDBOX_SHARED_CREDENTIALS=1`; all other credential stores SHALL retain Tau's normal atomic writer.
-
-#### Scenario: Credential refresh reaches the host
-
-- GIVEN host `credentials.json` is mounted
-- WHEN Tau updates a stored credential
-- THEN the host file SHALL contain the update
-
-#### Scenario: Missing host credentials stay project-local
-
-- GIVEN `TAU_CONFIG_DIR` exists without `credentials.json`
-- WHEN Tau creates credentials
-- THEN they SHALL be written into the per-project home
-- AND the host config SHALL remain unchanged
-
-### Requirement: Read-only `.agents` resources
-
-When `TAU_AGENTS_DIR` exists, it SHALL be mounted read-only at `/home/tau/.agents`.
-
-#### Scenario: Global skill is usable but immutable
-
-- GIVEN a host `.agents` skill exists
-- WHEN the sandbox starts
-- THEN Tau SHALL be able to read it
-- AND guest writes to the host skill SHALL fail
-
-### Requirement: Reset bypasses secret discovery
+#### Requirement: Reset bypasses secret discovery
 
 A reset invocation SHALL remove the current project's persistent volumes without locating, opening, parsing, validating, or exporting project-secret configuration. Secret errors and runtime compatibility SHALL NOT prevent reset.
 
-#### Scenario: Invalid secrets do not block reset
+##### Scenario: Invalid secrets do not block reset
 
 - GIVEN the exact project secret location contains invalid or unreadable entries
 - WHEN the user invokes reset
 - THEN the launcher SHALL perform its existing volume-removal behavior
 - AND it SHALL NOT read or validate either secret source
 
-#### Scenario: Unsupported runtime does not block reset
+##### Scenario: Unsupported runtime does not block reset
 
 - GIVEN the installed runtime is outside the project-secret compatibility range
 - WHEN the user invokes reset
 - THEN the launcher SHALL perform its existing volume-removal behavior without a secret compatibility error
 
-### Requirement: Exact secret location mapping
+#### Requirement: Exact secret location mapping
 
 The launcher SHALL make the launch directory and projects root absolute and lexically normalize dot segments without following symlinks. It SHALL separately establish their physical paths by resolving symlinks. Containment SHALL compare complete path components in both lexical and physical forms and SHALL fail closed when identity or containment cannot be established. Physical location SHALL decide whether a launch belongs to the projects root: a lexical path outside that physically resolves inside SHALL be eligible, while a lexical path inside that physically resolves outside SHALL be ineligible. Independent lexical and physical checks SHALL both apply when validating secret source placement.
 
@@ -204,170 +29,170 @@ The launcher SHALL make the launch directory and projects root absolute and lexi
 
 The launcher SHALL derive project-secret configuration only when the physical launch directory is a proper descendant of the physical projects root. The host location SHALL mirror the physical relative path under the user's home, with a dot prefixed to the first relative component. The launcher SHALL use only the exact location and SHALL NOT inherit from a parent. The projects root itself and launches outside it SHALL NOT derive project secrets.
 
-#### Scenario: Project maps to hidden home location
+##### Scenario: Project maps to hidden home location
 
 - GIVEN the default projects root and a launch from its `megali` child
 - WHEN the launcher resolves project secrets
 - THEN it SHALL select the user's `.megali` location
 
-#### Scenario: Nested launch maps exactly
+##### Scenario: Nested launch maps exactly
 
 - GIVEN the default projects root and a launch from its `megali/main/api` descendant
 - WHEN the launcher resolves project secrets
 - THEN it SHALL select the user's `.megali/main/api` location
 
-#### Scenario: Nested launch does not inherit
+##### Scenario: Nested launch does not inherit
 
 - GIVEN secret configuration exists for `megali` but not for `megali/main`
 - WHEN the launcher starts from exactly `megali/main`
 - THEN it SHALL launch without the `megali` secrets
 
-#### Scenario: Explicit root changes mapping
+##### Scenario: Explicit root changes mapping
 
 - GIVEN a relative or absolute explicit projects root containing `megali/main`
 - WHEN the launcher starts from that descendant
 - THEN it SHALL select the user's `.megali/main` location
 
-#### Scenario: Lexically outside launch resolves inside
+##### Scenario: Lexically outside launch resolves inside
 
 - GIVEN a lexical launch path outside the lexical projects root physically resolves to `megali/main` under the physical projects root
 - WHEN the launcher resolves project secrets
 - THEN it SHALL select the user's `.megali/main` location
 
-#### Scenario: Lexically inside launch resolves outside
+##### Scenario: Lexically inside launch resolves outside
 
 - GIVEN a lexical launch path inside the lexical projects root physically resolves outside the physical projects root
 - WHEN the launcher resolves project secrets
 - THEN it SHALL launch without automatically selected project secrets
 
-#### Scenario: Missing default disables discovery
+##### Scenario: Missing default disables discovery
 
 - GIVEN `TAU_PROJECTS_DIR` is unset and `${HOME}/Projects` has no directory entry
 - WHEN the launcher starts
 - THEN it SHALL launch without project secrets
 
-#### Scenario: Invalid default fails
+##### Scenario: Invalid default fails
 
 - GIVEN `TAU_PROJECTS_DIR` is unset and `${HOME}/Projects` is dangling, non-directory, unreadable, or unsearchable
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation
 
-#### Scenario: Invalid explicit root fails
+##### Scenario: Invalid explicit root fails
 
 - GIVEN `TAU_PROJECTS_DIR` is empty, missing, dangling, non-directory, unreadable, or unsearchable
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation with an error that identifies the setting
 
-#### Scenario: Root and outside launches have no secrets
+##### Scenario: Root and outside launches have no secrets
 
 - GIVEN the physical launch directory equals or is outside the physical projects root
 - WHEN the launcher resolves project secrets
 - THEN it SHALL launch without automatically selected project secrets
 
-### Requirement: Early source preflight
+#### Requirement: Early source preflight
 
 For normal launches, project-secret discovery and exposure preflight SHALL finish before image lookup, image build, ordinary environment-file evaluation, host configuration snapshotting, or mount construction. A derived secret location with no directory entry SHALL mean no project secrets. An existing entry SHALL resolve to a readable and searchable directory or launch SHALL fail.
 
 Within an existing directory, the exact source entries SHALL be `${mapped-directory}/secrets.env` for values and `${mapped-directory}/secrets.yaml` for policy. Both entries SHALL be readable regular files or both SHALL be absent. Dangling symlinks and non-regular entries SHALL count as present and invalid. Two present regular sources SHALL form a present pair and trigger runtime compatibility checking before content parsing. A present pair whose grammars and exact name sets pass SHALL form a validated configuration, which SHALL contain at least one matched secret. Validated entries supplied to the runtime SHALL be active secrets. Empty, comment-only, or malformed present pairs SHALL fail after the compatibility gate.
 
-#### Scenario: Preflight precedes image build
+##### Scenario: Preflight precedes image build
 
 - GIVEN sources belonging to a present pair would be exposed by the image build context
 - WHEN the selected image is absent
 - THEN the launcher SHALL reject the sources before invoking the image builder
 
-#### Scenario: Absent directory disables secrets
+##### Scenario: Absent directory disables secrets
 
 - GIVEN the exact derived secret directory has no directory entry
 - WHEN the launcher starts
 - THEN it SHALL launch without project secrets
 
-#### Scenario: Invalid directory fails closed
+##### Scenario: Invalid directory fails closed
 
 - GIVEN the derived secret directory is dangling, non-directory, unreadable, or unsearchable
 - WHEN the launcher starts
 - THEN it SHALL fail before image or sandbox creation
 
-#### Scenario: Exact basenames form the pair
+##### Scenario: Exact basenames form the pair
 
 - GIVEN a derived directory contains readable regular `secrets.env` and `secrets.yaml` entries
 - WHEN the launcher performs source preflight
 - THEN it SHALL classify those exact entries as the present value and policy pair
 - AND differently named files SHALL NOT substitute for either source
 
-#### Scenario: Absent pair disables secrets
+##### Scenario: Absent pair disables secrets
 
 - GIVEN the derived directory is valid and neither exact source entry exists
 - WHEN the launcher starts
 - THEN it SHALL launch without project secrets
 
-#### Scenario: Incomplete pair fails closed
+##### Scenario: Incomplete pair fails closed
 
 - GIVEN exactly one exact source entry exists
 - WHEN the launcher starts
 - THEN it SHALL fail before image or sandbox creation and identify the missing source
 
-#### Scenario: Invalid source type fails closed
+##### Scenario: Invalid source type fails closed
 
 - GIVEN either exact source is a directory, device, socket, FIFO, unreadable file, or dangling symlink
 - WHEN the launcher starts
 - THEN it SHALL fail before opening any blocking special file
 
-#### Scenario: Empty pair fails closed
+##### Scenario: Empty pair fails closed
 
 - GIVEN both exact sources contain no declared secret after blank and full-comment lines are ignored
 - WHEN the launcher starts
 - THEN it SHALL fail before image or sandbox creation
 
-### Requirement: Host-only source isolation
+#### Requirement: Host-only source isolation
 
 The source directory and files belonging to a present pair SHALL be lexically and physically outside the projects root. Lexical containment SHALL use normalized absolute path components without symlink resolution. Physical containment and file aliases SHALL use filesystem identity, including hard links and case-insensitive aliases. An inability to inspect identity SHALL fail closed.
 
 The launcher SHALL reject present-pair sources when the directory or either file overlaps in either direction with the workspace, image build context, a direct guest mount source, a host configuration source, shared credentials, the immutable environment reference, or a target reachable from a recursively dereferenced host-configuration link. It SHALL detect hard-link aliases of either source throughout recursively exposed or built source trees. Neither source nor real value SHALL be mounted, copied, snapshotted, built into an image, or otherwise made readable inside the sandbox by the launcher.
 
-#### Scenario: Lexical project source is rejected
+##### Scenario: Lexical project source is rejected
 
 - GIVEN an exact source is lexically inside the projects root but resolves outside it
 - WHEN the launcher starts
 - THEN it SHALL fail before image or sandbox creation
 
-#### Scenario: Physical project source is rejected
+##### Scenario: Physical project source is rejected
 
 - GIVEN an exact source is lexically outside the projects root but resolves inside it
 - WHEN the launcher starts
 - THEN it SHALL fail before image or sandbox creation
 
-#### Scenario: Direct source overlap is rejected
+##### Scenario: Direct source overlap is rejected
 
 - GIVEN a present-pair directory overlaps the workspace or another direct host source in either direction
 - WHEN the launcher starts
 - THEN it SHALL fail without mounting or building the source
 
-#### Scenario: Nested snapshot link is rejected
+##### Scenario: Nested snapshot link is rejected
 
 - GIVEN a snapshotted host source contains a nested symlink whose resolved target overlaps a present-pair directory or file
 - WHEN the launcher starts
 - THEN it SHALL fail without copying the target
 
-#### Scenario: Hard-link exposure is rejected
+##### Scenario: Hard-link exposure is rejected
 
 - GIVEN a hard link to either present-pair source exists anywhere under a recursively mounted, snapshotted, or built host source
 - WHEN the launcher starts
 - THEN it SHALL fail before image or sandbox creation
 
-#### Scenario: Exposure error has first precedence
+##### Scenario: Exposure error has first precedence
 
 - GIVEN present-pair sources have an exposure collision, malformed content, and an incompatible runtime
 - WHEN the launcher starts
 - THEN it SHALL report the exposure failure without checking compatibility or parsing content
 
-#### Scenario: Secret sources remain absent from guest data
+##### Scenario: Secret sources remain absent from guest data
 
 - GIVEN a validated configuration with no exposure collision
 - WHEN the sandbox starts
 - THEN the launcher SHALL NOT place either source or real value in the sandbox filesystem, mounts, snapshots, or image inputs
 
-### Requirement: Literal secret value grammar
+#### Requirement: Literal secret value grammar
 
 The value source SHALL contain only printable ASCII bytes plus CR and LF line endings. It SHALL reject NUL, other control bytes, and non-ASCII bytes before storing or exporting values. It SHALL accept LF or CRLF, remove a CR only as part of CRLF, accept a final line without a terminator, ignore empty and space-only lines, and ignore full-line comments whose first non-space character is `#`. Tabs SHALL be rejected.
 
@@ -375,71 +200,71 @@ Every other line SHALL be `NAME=VALUE`, with a name beginning in column one and 
 
 The image entrypoint SHALL keep all internal shell variables under the reserved `TAU_ENTRYPOINT_` prefix. The launcher SHALL reject the following exact guest names: `HOME`, `SHELL`, `TERM`, `COLORTERM`, `USER`, `LOGNAME`, `PATH`, `PYTHONUSERBASE`, `NPM_CONFIG_PREFIX`, `PIP_USER`, `TAU_NO_UPDATE_CHECK`, `TAU_SANDBOX_SHARED_CREDENTIALS`, `BASH_ENV`, `ENV`, `IFS`, `CDPATH`, `GLOBIGNORE`, `SHELLOPTS`, `BASHOPTS`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `PYTHONHOME`, `PYTHONPATH`, `NODE_OPTIONS`, `PWD`, `OLDPWD`, `SHLVL`, `_`, `EUID`, `UID`, `PPID`, `BASHPID`, `LINENO`, `FUNCNAME`, `GROUPS`, `DIRSTACK`, `PIPESTATUS`, `RANDOM`, `SECONDS`, `HOSTNAME`, `HOSTTYPE`, `MACHTYPE`, `OSTYPE`, `OPTERR`, `OPTIND`, `OPTARG`, `PS1`, `PS2`, `PS4`, `EPOCHSECONDS`, `EPOCHREALTIME`, `SRANDOM`, `REPLY`, `MAPFILE`, `COPROC`, `HISTCMD`, `COLUMNS`, and `LINES`. It SHALL also reject names beginning `BASH`, `TAU_ENTRYPOINT_`, or `TAU_SANDBOX_SECRET_SOURCE_`.
 
-#### Scenario: Literal value is preserved
+##### Scenario: Literal value is preserved
 
 - GIVEN a value contains spaces, dollar signs, quotes, `#`, and additional equals signs
 - WHEN the launcher reads the source
 - THEN it SHALL retain those characters as literal data
 
-#### Scenario: NUL and unsupported bytes are rejected safely
+##### Scenario: NUL and unsupported bytes are rejected safely
 
 - GIVEN the source contains NUL, another unsupported control byte, or a non-ASCII byte
 - WHEN the launcher starts
 - THEN it SHALL fail before storing or exporting project values
 - AND it SHALL NOT print the offending data
 
-#### Scenario: Shell syntax is not executed
+##### Scenario: Shell syntax is not executed
 
 - GIVEN a value contains command-substitution syntax
 - WHEN the launcher reads the source
 - THEN it SHALL retain that syntax as data without executing it
 
-#### Scenario: Line forms are handled exactly
+##### Scenario: Line forms are handled exactly
 
 - GIVEN the source contains blank lines, space-only lines, full-line comments, CRLF assignments, and a final unterminated assignment
 - WHEN the launcher reads the source
 - THEN it SHALL ignore non-entries, remove only CRLF carriage returns, and retain the final assignment
 
-#### Scenario: Malformed entry is rejected safely
+##### Scenario: Malformed entry is rejected safely
 
 - GIVEN an entry has a tab, leading name whitespace, invalid name, or no equals sign
 - WHEN the launcher starts
 - THEN it SHALL fail with the line number without printing the entry
 
-#### Scenario: Duplicate and empty values are rejected
+##### Scenario: Duplicate and empty values are rejected
 
 - GIVEN an entry duplicates a name or has a zero-length value
 - WHEN the launcher starts
 - THEN it SHALL fail with the line number without printing values
 
-#### Scenario: Space-only value is accepted
+##### Scenario: Space-only value is accepted
 
 - GIVEN an entry has a value containing only spaces
 - WHEN the launcher reads the source
 - THEN it SHALL retain those spaces as non-empty literal data
 
-#### Scenario: Entrypoint namespace is reserved
+##### Scenario: Entrypoint namespace is reserved
 
 - GIVEN an entry uses the `TAU_ENTRYPOINT_` prefix
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation with the line number and reserved-name error class
 - AND the entrypoint SHALL keep its internal variables under that prefix
 
-#### Scenario: Bash dynamic name is reserved
+##### Scenario: Bash dynamic name is reserved
 
 - GIVEN an entry uses an exact Bash-managed name or the `BASH` prefix
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation with the line number and reserved-name error class
 - AND it SHALL NOT print the name, line, or value
 
-#### Scenario: Runner name is reserved
+##### Scenario: Runner name is reserved
 
 - GIVEN an entry uses an exact runner-owned name or the host-source prefix
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation with the line number and reserved-name error class
 - AND it SHALL NOT print the name, line, or value
 
-### Requirement: Restricted secret policy grammar
+#### Requirement: Restricted secret policy grammar
 
 The policy source SHALL be ASCII and SHALL reject NUL, BOM, non-ASCII bytes, and tabs. It SHALL accept LF or CRLF, remove a CR only as part of CRLF, and accept a final grammar line without a terminator. Empty lines, space-only lines, and full-line comments beginning after zero or more spaces MAY occur between grammar elements and SHALL NOT change parser state. Inline comments SHALL be rejected.
 
@@ -449,132 +274,132 @@ An allow scalar MAY be unquoted or surrounded by one matching pair of single or 
 
 Names, fields, and injection values SHALL compare case-sensitively. Canonical destinations SHALL compare case-insensitively through their lowercase form. Duplicate names, fields, destinations, or injection values SHALL be rejected. The value and policy name sets SHALL match exactly and contain at least one name. Errors SHALL report the source, line number, and error class without printing secret values.
 
-#### Scenario: Minimal policy is accepted
+##### Scenario: Minimal policy is accepted
 
 - GIVEN a policy has one name, one allow field with one valid destination, and no inject field
 - WHEN the launcher reads it
 - THEN it SHALL enable header substitution for that name
 
-#### Scenario: Full supported policy is accepted
+##### Scenario: Full supported policy is accepted
 
 - GIVEN a policy uses comments and blank lines between valid elements, quoted and unquoted destinations, a wildcard, and all three supported injection locations
 - WHEN the launcher reads it
 - THEN it SHALL canonicalize destinations and retain the enabled locations
 
-#### Scenario: Final unterminated policy line is accepted
+##### Scenario: Final unterminated policy line is accepted
 
 - GIVEN the final valid policy item has no line terminator
 - WHEN the launcher reads the policy
 - THEN it SHALL retain that complete item
 
-#### Scenario: Grammar boundaries are rejected
+##### Scenario: Grammar boundaries are rejected
 
 - GIVEN a policy contains a BOM, tab, non-ASCII byte, trailing whitespace, bad indentation, wrong field order, inline comment, inline collection, anchor, alias, tag, unknown field, escape, unmatched quote, empty scalar, or interpolation marker
 - WHEN the launcher starts
 - THEN it SHALL fail with the line number without generating runtime configuration
 
-#### Scenario: Destination length boundaries are accepted
+##### Scenario: Destination length boundaries are accepted
 
 - GIVEN an exact destination is exactly 253 characters or a wildcard suffix is exactly 253 characters with a 255-character complete scalar, and every label is valid
 - WHEN the launcher reads the policy
 - THEN it SHALL accept the destination
 
-#### Scenario: Invalid destination is rejected
+##### Scenario: Invalid destination is rejected
 
 - GIVEN an allow item is `*`, an IP literal, port-qualified, single-label, has an invalid DNS label, has an exact name over 253 characters, or has a wildcard suffix over 253 characters
 - WHEN the launcher starts
 - THEN it SHALL fail with the line number
 
-#### Scenario: Missing list data is rejected
+##### Scenario: Missing list data is rejected
 
 - GIVEN a policy name has no allow item or has an inject field with no item
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation
 
-#### Scenario: Duplicate policy data is rejected
+##### Scenario: Duplicate policy data is rejected
 
 - GIVEN a policy repeats a name, field, canonical destination, or injection location
 - WHEN the launcher starts
 - THEN it SHALL fail with the duplicate line number
 
-#### Scenario: Unsupported injection location is rejected
+##### Scenario: Unsupported injection location is rejected
 
 - GIVEN a policy enables an injection location outside the exact supported set
 - WHEN the launcher starts
 - THEN it SHALL fail with the line number
 
-#### Scenario: Inline value and source are rejected
+##### Scenario: Inline value and source are rejected
 
 - GIVEN a policy contains a native inline value or environment-source field
 - WHEN the launcher starts
 - THEN it SHALL reject the unsupported field before runtime configuration exists
 
-#### Scenario: Name sets must match exactly
+##### Scenario: Name sets must match exactly
 
 - GIVEN a name is present in only one source or differs only by letter case
 - WHEN the launcher starts
 - THEN it SHALL fail before sandbox creation
 - AND it SHALL NOT resolve any missing value from the ambient environment
 
-### Requirement: Compatible secret runtime
+#### Requirement: Compatible secret runtime
 
 Before ordinary environment processing, the launcher SHALL resolve `msb` through the initial host `PATH` to an external executable and canonicalize it. It SHALL reject that executable when it is lexically or physically inside, or hard-linked anywhere into, the projects root, workspace, repository build context, or another recursively exposed or project-controlled source tree. Only after this location and identity preflight SHALL the initial host `PATH` be trusted for runtime selection. The launcher SHALL record the accepted executable's filesystem identity in state that trusted ordinary configuration cannot change and use that absolute executable for compatibility and launch operations. A present pair SHALL require a successful absolute-executable `--version` process that writes nothing to stderr and writes to stdout exactly `msb MAJOR.MINOR.PATCH`, followed by either no terminator or one LF. Each component SHALL be decimal with no leading zero except zero itself. Nonzero status, stderr output, CRLF, trailing blank lines, prerelease suffixes, build metadata, extra text, and malformed output SHALL be rejected. Compatible versions SHALL be greater than or equal to 0.6.12 and less than 1.0.0. The launcher SHALL check compatibility after source and exposure preflight but before content parsing or real-value retention, so incompatibility SHALL take precedence over empty or malformed content. No-pair and reset flows SHALL NOT apply this feature-specific gate. After ordinary configuration, the launcher SHALL verify that the saved absolute path still has the checked identity and SHALL invoke that exact executable; changing `PATH` SHALL NOT select another runtime.
 
-#### Scenario: Lower compatible boundary succeeds
+##### Scenario: Lower compatible boundary succeeds
 
 - GIVEN a present pair and successful version output exactly `msb 0.6.12` with zero or one LF terminator and empty stderr
 - WHEN the launcher checks compatibility
 - THEN it SHALL proceed to protected configuration parsing
 
-#### Scenario: Newer compatible versions succeed
+##### Scenario: Newer compatible versions succeed
 
 - GIVEN a present pair and an exact successful patch or minor version newer than 0.6.12 but below 1.0.0
 - WHEN the launcher checks compatibility
 - THEN it SHALL proceed to protected configuration parsing
 
-#### Scenario: Older version fails closed
+##### Scenario: Older version fails closed
 
 - GIVEN a present pair and an exact successful version older than 0.6.12
 - WHEN the launcher checks compatibility
 - THEN it SHALL fail before parsing or exporting real values
 
-#### Scenario: Future major fails pending review
+##### Scenario: Future major fails pending review
 
 - GIVEN a present pair and a successful version 1.0.0 or newer
 - WHEN the launcher checks compatibility
 - THEN it SHALL fail before parsing or exporting real values
 
-#### Scenario: Ambiguous version fails closed
+##### Scenario: Ambiguous version fails closed
 
 - GIVEN a present pair and a nonzero version process, stderr output, CRLF, trailing blank line, missing output, leading-zero component, prerelease or build suffix, extra text, or malformed output
 - WHEN the launcher checks compatibility
 - THEN it SHALL fail before parsing or retaining real values
 
-#### Scenario: Project-controlled runtime is rejected
+##### Scenario: Project-controlled runtime is rejected
 
 - GIVEN an initial `PATH` resolves `msb` to an executable inside or hard-linked into a project-controlled, built, mounted, or snapshotted source tree
 - WHEN a present pair triggers compatibility checking
 - THEN the launcher SHALL reject the executable before retaining project values
 
-#### Scenario: Environment PATH change cannot replace runtime
+##### Scenario: Environment PATH change cannot replace runtime
 
 - GIVEN a present pair and trusted ordinary configuration changes `PATH` to contain another `msb`
 - WHEN the launcher invokes the runtime
 - THEN it SHALL revalidate and invoke the absolute executable that passed compatibility checking
 
-#### Scenario: Checked executable replacement fails closed
+##### Scenario: Checked executable replacement fails closed
 
 - GIVEN the checked absolute executable changes filesystem identity before final invocation
 - WHEN the launcher prepares to retain or export real values
 - THEN it SHALL fail without invoking the replacement
 
-#### Scenario: No-secret launch remains compatible
+##### Scenario: No-secret launch remains compatible
 
 - GIVEN no present pair
 - WHEN the launcher starts with an incompatible runtime
 - THEN the project-secret compatibility requirement SHALL NOT prevent launch
 
-### Requirement: Collision-free source references
+#### Requirement: Collision-free source references
 
 `TAU_ENV_FILE` SHALL remain trusted executable host configuration. Intentional reads, output, traps, or other actions that it performs SHALL be outside the project-secret non-disclosure boundary. Before real project values are retained, the launcher SHALL disable xtrace, clear DEBUG, RETURN, ERR, and EXIT traps and related tracing state, and isolate subsequent secret handling from functions or instrumentation established by the sourced file.
 
@@ -584,371 +409,186 @@ The generated scoped policy SHALL contain only double-quoted guest-name mapping 
 
 For compatible runtime versions, an exact environment reference SHALL resolve the source value literally at spawn without recursive expansion or durable plaintext storage; only the generated placeholder SHALL become the guest secret value. The host source variable SHALL NOT become a guest variable. Runtime-owned secret diagnostics and representations SHALL follow the compatible runtime's documented redaction contract; launcher-authored errors SHALL NOT include values.
 
-#### Scenario: Occupied source candidates are skipped
+##### Scenario: Occupied source candidates are skipped
 
 - GIVEN the initial and one or more later source candidates are occupied by ambient, ordinary, project, or earlier allocated names
 - WHEN the launcher allocates sources
 - THEN it SHALL choose the first unoccupied candidate for each secret without modifying occupied variables
 
-#### Scenario: Sources exist only in final subprocess
+##### Scenario: Sources exist only in final subprocess
 
 - GIVEN valid project values and allocated source names
 - WHEN the launcher invokes the runtime
 - THEN only the final runtime subprocess SHALL receive those source values
 - AND the guest SHALL NOT receive the source names
 
-#### Scenario: Generated schema contains no values
+##### Scenario: Generated schema contains no values
 
 - GIVEN an active secret
 - WHEN the launcher generates scoped policy
 - THEN it SHALL emit a double-quoted guest-name key, an exact host source reference, destinations, and injection locations
 - AND it SHALL NOT emit the real value
 
-#### Scenario: Implicit-scalar-shaped name stays a string
+##### Scenario: Implicit-scalar-shaped name stays a string
 
 - GIVEN a valid guest name is `true`, `false`, or `null`
 - WHEN the launcher generates and the runtime parses scoped policy
 - THEN the mapping key SHALL remain that exact string
 
-#### Scenario: Temporary policy is private and cleaned
+##### Scenario: Temporary policy is private and cleaned
 
 - GIVEN generated runtime policy is required
 - WHEN launch succeeds or fails
 - THEN its directory and file SHALL have private modes while present
 - AND cleanup SHALL remove the generated directory
 
-#### Scenario: Literal source text is not launcher-expanded
+##### Scenario: Literal source text is not launcher-expanded
 
 - GIVEN a real value contains text shaped like an environment reference
 - WHEN the launcher exports it under the synthetic source name
 - THEN the source process environment SHALL contain that exact literal text
 - AND the launcher SHALL NOT resolve it as another environment reference
 
-### Requirement: Protected secret boundary
+#### Requirement: Protected secret boundary
 
 For each active secret, the launcher SHALL configure the compatible runtime to expose a generated guest placeholder instead of a real value and to permit substitution only for the validated HTTP(S) destinations and request locations in that secret's policy. The compatible runtime's documented contract SHALL govern DNS observation, TLS identity, HTTP authority, substitution, and violation handling. The launcher SHALL encode exactly the validated effective destinations and request locations after applying the documented omitted-`inject` default, and the destination allowlist SHALL NOT expand sandbox network policy.
 
-#### Scenario: Guest receives placeholder only
+##### Scenario: Guest receives placeholder only
 
 - GIVEN an active secret named `OPENAI_API_KEY`
 - WHEN a guest process reads that variable
 - THEN it SHALL observe a runtime placeholder
 - AND it SHALL NOT observe the real value injected by the launcher
 
-#### Scenario: Host source is absent from guest
+##### Scenario: Host source is absent from guest
 
 - GIVEN an active secret uses an allocated host source
 - WHEN the guest inspects its environment
 - THEN the host source name and value SHALL be absent
 
-#### Scenario: Allowed request policy is encoded
+##### Scenario: Allowed request policy is encoded
 
 - GIVEN an active secret permits an HTTPS destination and request location
 - WHEN the launcher generates the compatible runtime policy
 - THEN that destination and request location SHALL be present for the secret
 
-#### Scenario: Disallowed effective policy remains absent
+##### Scenario: Disallowed effective policy remains absent
 
 - GIVEN a destination or request location is absent from the validated effective policy after defaults
 - WHEN the launcher generates the compatible runtime policy
 - THEN it SHALL remain absent from the secret's runtime policy
 
-#### Scenario: Secret policy adds no private egress rule
+##### Scenario: Secret policy adds no private egress rule
 
 - GIVEN an active policy permits a private destination and no independent private-network exception is configured
 - WHEN the launcher constructs the runtime invocation
 - THEN it SHALL NOT add a network exception for that secret destination
 - AND the existing sandbox network policy SHALL remain unchanged
 
-### Requirement: Environment source isolation
+#### Requirement: Environment source isolation
 
 Before sourcing `TAU_ENV_FILE`, the launcher SHALL reject it when its normalized lexical path, resolved physical path, or filesystem identity matches the value source belonging to the present pair. The check SHALL include hard links and SHALL fail closed when identity cannot be established. Concurrent trusted-host mutation after this preflight SHALL be outside the supported threat model.
 
 Project secret names and policy SHALL be validated without retaining real project values before ordinary forwarding. A matching `TAU_ENV_FILE` name SHALL be omitted from raw guest `KEY=value` arguments regardless of source order. After trusted ordinary configuration returns, subsequent value parsing and runtime preparation SHALL be isolated from its xtrace, traps, functions, and tracing state. Project source or runtime-preparation errors SHALL identify configuration without printing names, values, or secret-bearing lines.
 
-#### Scenario: Same lexical environment source is rejected
+##### Scenario: Same lexical environment source is rejected
 
 - GIVEN `TAU_ENV_FILE` names the present-pair value source lexically
 - WHEN the launcher starts
 - THEN it SHALL fail before sourcing the file
 
-#### Scenario: Resolved or hard-link environment alias is rejected
+##### Scenario: Resolved or hard-link environment alias is rejected
 
 - GIVEN `TAU_ENV_FILE` resolves to or is a hard link of the present-pair value source
 - WHEN the launcher starts
 - THEN it SHALL fail before sourcing the file
 
-#### Scenario: Command substitution cannot execute through alias
+##### Scenario: Command substitution cannot execute through alias
 
 - GIVEN the aliased present-pair value source contains command-substitution syntax
 - WHEN the launcher rejects the collision
 - THEN it SHALL NOT execute that syntax
 
-#### Scenario: Secret name suppresses raw forwarding
+##### Scenario: Secret name suppresses raw forwarding
 
 - GIVEN the same name occurs in the ordinary and project value sources
 - WHEN the launcher constructs guest environment arguments
 - THEN it SHALL omit the raw ordinary value for that name
 
-#### Scenario: Trusted environment instrumentation is cleared
+##### Scenario: Trusted environment instrumentation is cleared
 
 - GIVEN trusted ordinary configuration enables xtrace, traps, or replaceable shell functions
 - WHEN the launcher subsequently retains and exports project values
 - THEN those values SHALL NOT be printed or inspected by the inherited instrumentation
 
-#### Scenario: Intentional trusted output is outside boundary
+##### Scenario: Intentional trusted output is outside boundary
 
 - GIVEN trusted ordinary configuration intentionally reads and prints a host secret source
 - WHEN that trusted code executes
 - THEN its intentional behavior SHALL be outside the launcher's project-secret non-disclosure guarantee
 
-### Requirement: Invariant environment-reference injection
+### MODIFIED Requirements
 
-`run.sh` SHALL mount repository `config/APPEND_SYSTEM.md` read-only at `/etc/tau-sandbox/APPEND_SYSTEM.md`. The installed `/usr/local/bin/tau` wrapper SHALL prepend:
-
-```text
---append-system-prompt /etc/tau-sandbox/APPEND_SYSTEM.md
-```
-
-before all caller arguments. The image SHALL also contain a fallback copy at that path.
-
-Additional explicit append options SHALL remain in caller order and therefore combine with the sandbox reference. Tau's normal automatic `APPEND_SYSTEM.md` discovery is not cumulative with explicit startup input and SHALL be documented accordingly.
-
-#### Scenario: Project prompt cannot shadow sandbox context
-
-- GIVEN a project has `.tau/APPEND_SYSTEM.md`
-- WHEN Tau starts normally through the wrapper
-- THEN the explicit sandbox reference SHALL remain in the active system prompt
-
-#### Scenario: Explicit additional prompt combines
-
-- GIVEN the caller supplies another `--append-system-prompt`
-- WHEN Tau starts
-- THEN the sandbox reference SHALL precede the caller's append input
-
-### Requirement: Hardened guest execution
-
-The sandbox SHALL:
-
-- run as user `tau` with UID/GID 1000
-- use microsandbox's `restricted` security profile
-- strip setuid and setgid bits from image files
-- mount `/tmp` as tmpfs
-- cap processes with `nproc`
-- use the public network profile without publishing inbound ports
-- allow egress to exactly the hosts listed in `TAU_LAN_HOSTS` (comma-separated, empty by default) without allowing the rest of the private network
-
-#### Scenario: Guest identity is unprivileged
-
-- WHEN `id -u` runs in the guest
-- THEN it SHALL print `1000`
-
-#### Scenario: External DNS and configured LAN hosts are reachable while inbound remains closed
-
-- WHEN the sandbox launches
-- THEN `--net public` SHALL be passed to `msb run`
-- AND one `--net-rule allow@<host>` SHALL be passed per non-empty `TAU_LAN_HOSTS` entry
-- AND an unset or empty `TAU_LAN_HOSTS` SHALL pass no `--net-rule`
-- AND a `TAU_LAN_HOSTS` value containing characters outside `[0-9A-Za-z.:-]` SHALL abort the launch with an error
-- AND the broad `private` network profile SHALL NOT be enabled
-- AND no inbound port SHALL be published
-
-### Requirement: Per-project package declarations
-
-For this requirement, a `.tau-packages` file is non-empty when it declares at least one package name after stripping comments, blank lines, and surrounding whitespace. A non-empty `.tau-packages` file SHALL select image `tau-agent-isolated-<image-name>-<base-hash>-<package-hash>`, where:
-
-- `<image-name>` is the project basename when `tau-agent-isolated-<basename>-<8 hex>-<8 hex>` is a legal OCI reference path component (lowercase `[a-z0-9._-]` with no adjacent separators, at most 255 characters), and otherwise the sanitized basename;
-- `<package-hash>` is derived from the raw bytes of `.tau-packages`;
-- `<base-hash>` is the first eight hexadecimal characters of the SHA-256 of the text formed by concatenating, in lexicographic path order, the hex-encoded SHA-256 digests (64 lowercase hex characters, no separators) of the raw bytes of each regular file directly under `config/` (including dotfiles), preceded by the digest of the repository `Containerfile`. It SHALL change when the content, or set, of those files changes and SHALL be stable when none does. Non-regular entries under `config/` SHALL be ignored.
-
-The launcher SHALL require interactive approval before building a missing package-specific image. When the launcher would otherwise derive a package image tag (a non-empty `.tau-packages` file is present and no `TAU_IMAGE` override is set), a missing repository `Containerfile` or `config/` directory SHALL abort the launch with an error rather than derive a tag whose freshness cannot be verified against the current inputs.
-
-The file format SHALL:
-
-- contain one Arch Linux package name per line
-- strip leading/trailing whitespace and CRLF
-- ignore comments and blank lines
-- reject shell metacharacters before invoking a build
-
-Comment-only and empty files SHALL use the shared base image.
-
-#### Scenario: Non-interactive rebuild is refused
-
-- GIVEN package changes require a new image
-- WHEN stdin is not a terminal
-- THEN startup SHALL fail without building
-
-#### Scenario: Base input change invalidates the package image
-
-- GIVEN a project whose package image was built from an earlier build context
-- WHEN the content of `Containerfile` or a `config/` file changes and the `.tau-packages` content does not
-- THEN the launcher SHALL select a different image tag than the previously built one
-- AND building it SHALL require the same interactive approval as any missing package image
-
-#### Scenario: Added base input changes the tag
-
-- GIVEN a package image was tagged from a base-input set without a particular regular file under `config/`
-- WHEN that file is added to `config/` without changing any other input
-- THEN the launcher SHALL select a different image tag than the previously built one
-
-#### Scenario: Removed base input changes the tag
-
-- GIVEN a package image was tagged from a base-input set that included a particular regular file under `config/`
-- WHEN that file is removed without changing any other input
-- THEN the launcher SHALL select a different image tag than the previously built one
-
-#### Scenario: Non-file config entries do not affect the hash
-
-- GIVEN `config/` contains a directory alongside its regular files and the package image tag exists in the cache
-- WHEN the project launches
-- THEN the launcher SHALL select the same tag as it would without the directory
-- AND it SHALL boot the cached image without building
-
-#### Scenario: Unchanged inputs reuse the cached image
-
-- GIVEN the package image tag derived from the current build context exists in the microsandbox cache
-- WHEN the project launches and stdin is not a terminal
-- THEN the launcher SHALL NOT build anything
-- AND the launcher SHALL NOT remove any image from the cache
-- AND the launcher SHALL boot the cached image
-
-#### Scenario: Non-interactive base-triggered rebuild is refused
-
-- GIVEN the package image tag is missing because the build context changed and stdin is not a terminal
-- WHEN the project launches
-- THEN startup SHALL fail without building
-
-#### Scenario: Missing base inputs abort a package-tag launch
-
-- GIVEN the project has a non-empty `.tau-packages` file and no `TAU_IMAGE` override, and the repository `Containerfile` or the `config/` directory is missing
-- WHEN the project launches
-- THEN the launcher SHALL abort with an error and SHALL NOT build or boot an image
-
-#### Scenario: Missing base inputs do not affect other launches
-
-- GIVEN the repository `Containerfile` or the `config/` directory is missing
-- WHEN a project without a non-empty `.tau-packages` file, or with a `TAU_IMAGE` override, launches
-- THEN the launcher SHALL proceed with the shared base image or the override and SHALL NOT abort
-
-### Requirement: Superseded package images are pruned
-
-Package image tags are keyed by image name, base hash, and package hash, so same-image-name projects share one tag namespace: projects with identical base inputs and identical `.tau-packages` content use the same tag, while different package contents produce different tags under the same image-name prefix.
-
-When the launcher builds a package-specific image, it SHALL remove from the microsandbox cache every other image whose reference is `localhost/tau-agent-isolated-<image-name>-<package-hash>:latest` (legacy single-hash form of the current package content) or `localhost/tau-agent-isolated-<image-name>-<8 hex>-<package-hash>:latest` (any base version of the current package content). It SHALL NOT remove the image it just loaded. Inherent to the shared tag namespace, an image carrying the current package hash at another base hash is removed whether this project or a same-image-name project with identical `.tau-packages` content produced it. Images tagged with any other package hash — including those of same-image-name projects with different `.tau-packages` content and those of earlier package contents of this project — SHALL NOT be removed; in particular, a legacy single-hash tag whose hash differs from the current package hash SHALL NOT be removed. A failed removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be reported as an error.
-
-#### Scenario: Base-triggered rebuild removes the superseded image
-
-- GIVEN the cache contains a package image for the current package content whose tag derives from an older base hash (two-hash form)
-- WHEN the launcher rebuilds the package image for the changed base
-- THEN the old image SHALL be removed from the cache
-- AND the newly built image SHALL remain
-
-#### Scenario: Legacy single-hash image is pruned
-
-- GIVEN the cache contains a package image tagged in the legacy single-hash form for the same project and the same package content
-- WHEN the launcher rebuilds the package image
-- THEN the legacy image SHALL be removed from the cache
-- AND the newly built image SHALL remain
-
-#### Scenario: Legacy tag of another content is kept
-
-- GIVEN the cache contains a package image tagged in the legacy single-hash form whose hash differs from the current package hash
-- WHEN the launcher rebuilds the package image
-- THEN that image SHALL remain in the cache
-
-#### Scenario: Same-image-name projects keep their package images
-
-- GIVEN two projects with the same image name and different `.tau-packages` contents both have cached package images
-- WHEN the launcher rebuilds the package image for one of them
-- THEN the other project's image SHALL remain in the cache
-
-#### Scenario: Earlier package content image survives a rebuild
-
-- GIVEN the cache contains a package image tagged from earlier `.tau-packages` content of the same project
-- WHEN the launcher rebuilds the package image for the current content
-- THEN the earlier-content image SHALL remain in the cache
-
-#### Scenario: Fresh build with an empty cache succeeds
-
-- GIVEN the cache contains no package images for the project
-- WHEN the launcher builds the package image for the first time
-- THEN the build and load SHALL succeed and no removal error SHALL be reported
-
-#### Scenario: Failed removal does not fail the launch
-
-- GIVEN the cache contains a superseded package image whose removal from the cache fails
-- WHEN the launcher rebuilds the package image for the changed base
-- THEN the build, the load, and the launch SHALL succeed
-- AND no removal error SHALL be reported
-
-### Requirement: Environment forwarding
+#### Requirement: Environment forwarding
 
 Variables named in `TAU_ENV_FILE` (default `${HOME}/.env`) SHALL be forwarded as guest `KEY=value` arguments except when the name is an active project secret. Ordinary and project values SHALL NOT be baked into the image or printed by the launcher.
 
 The launcher SHALL NOT causally place real project values in guest environment arguments, launcher diagnostics, generated policy data, image inputs, mounts, snapshots, or guest files. This SHALL NOT claim that matching bytes cannot pre-exist independently or that an explicitly allowed remote service cannot reflect a substituted value in its response.
 
-#### Scenario: Ordinary variable remains forwarded
+##### Scenario: Ordinary variable remains forwarded
 
 - GIVEN an ordinary environment variable is not a project secret
 - WHEN the sandbox starts
 - THEN the guest SHALL receive its real value through ordinary forwarding
 
-#### Scenario: Project secret overrides ordinary forwarding
+##### Scenario: Project secret overrides ordinary forwarding
 
 - GIVEN the same name exists in ordinary and active project sources
 - WHEN the sandbox starts
 - THEN the launcher SHALL NOT pass the ordinary value as a raw guest argument
 - AND protected activation SHALL use the project value source
 
-#### Scenario: Launcher does not place project value in guest data
+##### Scenario: Launcher does not place project value in guest data
 
 - GIVEN an active value does not independently pre-exist in exposed data
 - WHEN the launcher builds or starts a sandbox
 - THEN it SHALL NOT place that value in output, arguments, image inputs, generated policy, snapshots, mounts, guest files, or raw guest environment
 
-#### Scenario: Allowed reflection is outside causal guarantee
+##### Scenario: Allowed reflection is outside causal guarantee
 
 - GIVEN an allowed service reflects a substituted non-sensitive test value
 - WHEN guest code prints or writes the response
 - THEN the launcher's causal non-disclosure requirement SHALL remain satisfied
 
-#### Scenario: Ordinary values remain undisclosed by launcher
+##### Scenario: Ordinary values remain undisclosed by launcher
 
 - GIVEN an ordinary value is selected for forwarding
 - WHEN the launcher builds or starts a sandbox
 - THEN it SHALL NOT print the value or include it in image inputs
 
-### Requirement: Configurable resources
+## Domain: Documentation
 
-The sandbox SHALL default to four virtual CPUs, 8 GB memory, and 1024 processes. `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` SHALL override these defaults.
+### ADDED Requirements
 
-### Requirement: Reset
-
-`./run.sh --reset` SHALL remove the project's home, session, and log volumes and exit successfully when any volume is already absent. Host Tau and `.agents` configuration SHALL remain untouched.
-
-### Requirement: Image build and load
-
-When the selected image is absent from the microsandbox cache, the launcher SHALL build it with Podman and load it through `podman save | msb load`. `TAU_IMAGE` SHALL bypass package processing and automatic image management and SHALL be passed to `msb run` unchanged.
-
-### Requirement: Project secret documentation
+#### Requirement: Project secret documentation
 
 User-facing documentation SHALL describe `TAU_PROJECTS_DIR`, exact host mapping, no inheritance, source grammars, reserved names, the compatibility gate triggered by a present pair, placeholders, destination restrictions, TLS identity requirements, request locations, ordinary-forwarding precedence, reset behavior, and network independence. It SHALL stop recommending raw ordinary forwarding for protected API keys and SHALL update all affected configuration, environment, security, testing, and prerequisite sections.
 
 The sandbox environment reference SHALL distinguish ordinary forwarded values from protected placeholders and SHALL NOT imply that `env` reveals protected real values.
 
-#### Scenario: User can configure protected API credentials
+##### Scenario: User can configure protected API credentials
 
 - GIVEN a user has a compatible runtime and an API credential with allowed destinations
 - WHEN the user follows the documentation for an exact launch directory
 - THEN it SHALL provide enough information to create valid paired sources and launch with placeholders
 
-#### Scenario: User understands compatibility
+##### Scenario: User understands compatibility
 
 - GIVEN a user has no present pair or has an incompatible runtime
 - WHEN the user reads prerequisites and configuration
 - THEN it SHALL explain that a present pair triggers the bounded version requirement and no pair skips it
 
-#### Scenario: Guest understands the boundary
+##### Scenario: Guest understands the boundary
 
 - GIVEN a sandbox starts with active project secrets
 - WHEN a guest user reads the environment reference

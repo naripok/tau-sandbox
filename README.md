@@ -2,7 +2,7 @@
 
 Per-project isolation for the [Tau coding agent](https://github.com/huggingface/tau) using [microsandbox](https://github.com/superradcompany/microsandbox) microVMs.
 
-Each project runs in its own hardware-isolated microVM with persistent home, session, and log volumes. Installed tools, sandbox-only Tau configuration, and shell customizations survive across runs, while Tau sessions and diagnostics remain isolated per project. Host Tau configuration synchronizes into the sandbox at every start without being modified, with `credentials.json` as the sole write exception for OAuth refresh.
+Each project runs in its own hardware-isolated microVM with persistent home, session, and log volumes. Installed tools, sandbox-only Tau configuration, and shell customizations survive across runs, while Tau sessions and diagnostics remain isolated per project. Host Tau configuration synchronizes into the sandbox at every start without being modified, with `credentials.json` as the sole write exception for OAuth refresh. API credentials configured as [protected project secrets](#protected-project-secrets) reach the guest only as placeholders that the runtime substitutes for explicitly allowed destinations.
 
 ## The Problem
 
@@ -62,6 +62,92 @@ Projects without `.tau-packages` use the shared base image — zero overhead.
 
 **Override:** Set `TAU_IMAGE=my-image-ref` to bypass `.tau-packages` and automatic image management entirely and use a specific image (load it yourself, e.g. `make build`).
 
+## Protected Project Secrets
+
+API credentials can be provided to a sandbox without ever exposing their real values inside the guest. When a launch directory belongs to a projects root, the launcher looks for a paired `secrets.env` / `secrets.yaml` in a hidden host-only location, validates both files, and hands the compatible microsandbox runtime a generated policy. The guest receives only placeholders; the runtime substitutes real values solely for the destinations and request locations each secret's policy allows.
+
+### Mapping: launch directory → secret location
+
+`TAU_PROJECTS_DIR` selects the projects root:
+
+- Unset: the default is `${HOME}/Projects`. When the default root has no directory entry, project-secret discovery is simply disabled; when it exists but is dangling, non-directory, unreadable, or unsearchable, the launch fails.
+- Explicitly set: an explicitly empty value is invalid. A relative value resolves from the launch directory. An explicit root that is dangling, non-directory, unreadable, or unsearchable fails the launch.
+
+A launch directory that physically resolves to a proper descendant of the physical projects root maps to a hidden directory under your home, with a dot prefixed to the first relative component:
+
+| Launch directory | Secret directory |
+| --- | --- |
+| `$HOME/Projects/megali` | `$HOME/.megali` |
+| `$HOME/Projects/megali/main` | `$HOME/.megali/main` |
+| `$HOME/Projects/megali/main/api` | `$HOME/.megali/main/api` |
+
+The mapping is exact: nested launches never inherit the parent's secrets, and there is no merging of configurations. Launching from the projects root itself, or from any directory outside it, selects no project secrets.
+
+The secret directory must stay outside the projects root: the launcher rejects sources that overlap — lexically, physically, or through hard links — the workspace, the image build context, host configuration sources, shared credentials, or any other host path the launch would mount, snapshot, or build.
+
+### Paired sources: `secrets.env` and `secrets.yaml`
+
+Project secrets live in exactly two files in the mapped directory: `secrets.env` holds the literal values and `secrets.yaml` holds the restricted policy. Both files must be present and readable regular files, or both absent — an incomplete pair fails the launch. Both name sets must match exactly.
+
+Example `$HOME/.megali/secrets.env`:
+
+```bash
+OPENAI_API_KEY=sk-proj-REPLACE-WITH-REAL-KEY
+STRIPE_API_KEY=sk-test-REPLACE-WITH-REAL-KEY
+```
+
+Example `$HOME/.megali/secrets.yaml`:
+
+```yaml
+OPENAI_API_KEY:
+  allow:
+    - api.openai.com
+  inject:
+    - headers
+STRIPE_API_KEY:
+  allow:
+    - api.stripe.com
+    - "*.stripe.com"
+```
+
+`OPENAI_API_KEY` shows an explicit `inject:` list; `STRIPE_API_KEY` omits it, which means `headers`.
+
+#### `secrets.env` — literal values
+
+Each entry is `NAME=VALUE` with the name in column one matching `[A-Za-z_][A-Za-z0-9_]*`. Everything after the first `=` is literal data:
+
+- Only printable ASCII bytes are allowed (plus line endings); NUL, other control bytes, tabs, and non-ASCII bytes are rejected.
+- LF or CRLF line endings are accepted, a final line without a terminator is accepted, blank and space-only lines are ignored, and full-line `#` comments are ignored.
+- Values are never evaluated as shell syntax: interpolation, substitutions, and quote removal do not happen, so `$`, quotes, backticks, and additional `=` signs stay literal.
+- Zero-length values and duplicate names are rejected; space-only values are accepted.
+
+#### `secrets.yaml` — restricted policy grammar
+
+The policy file is deliberately not general YAML. Each secret is a header line `NAME:` in column one, followed by exactly two-space-indented fields whose list items are indented with four spaces and `- `:
+
+- `allow:` (required) — one or more destination hostnames.
+- `inject:` (optional) — one or more of `headers`, `basic_auth`, or `query_params`. Omitted means `headers`.
+
+Destinations are ASCII DNS names, canonicalized to lowercase: an exact hostname has two or more labels and is at most 253 characters; a wildcard is `*.` plus two or more labels, at most 255 characters in total. Each label is 1–63 characters, begins and ends with a letter or digit, and contains only letters, digits, and internal hyphens. `*`, IP literals, ports, and interpolation markers are rejected. Names, fields, and injection values compare case-sensitively; duplicate names, fields, destinations, or injection values are rejected. Inline values, environment-source references, inline collections, anchors, aliases, tags, escapes, and inline comments are rejected — the launcher only ever generates the native runtime configuration itself.
+
+#### Reserved names
+
+Secret names must avoid variables the guest shell or launcher depends on: shell- and runtime-critical names (`HOME`, `SHELL`, `TERM`, `PATH`, `USER`, `LOGNAME`, `IFS`, `LD_PRELOAD`, `PYTHONHOME`, `NODE_OPTIONS`, …), Bash-managed dynamic names, and the `BASH`, `TAU_ENTRYPOINT_`, and `TAU_SANDBOX_SECRET_SOURCE_` prefixes. The exact full list is in [docs/SPEC.md](docs/SPEC.md) under "Literal secret value grammar".
+
+### Runtime compatibility gate
+
+A present pair triggers a version check of the `msb` runtime before any secret content is parsed: `msb --version` must succeed, write nothing to stderr, and print exactly `msb MAJOR.MINOR.PATCH` (decimal components, no leading zeros, no prerelease or build suffixes). The accepted range is `>=0.6.12,<1.0.0`. The gate applies only when a present pair exists — launching without a pair skips it entirely — and out-of-range or malformed versions fail the launch closed, with no plaintext fallback (the values are never forwarded raw instead).
+
+### Placeholders and substitution
+
+For each active secret the guest environment contains a runtime-generated placeholder of the form `$MSB_<NAME>` — never the real value. `env` shows the placeholder. The sandbox runtime substitutes the real value only for HTTP(S) requests whose destination and request location (header, basic-auth credential, or query parameter) the secret's policy allows; DNS observation, TLS identity, HTTP authority, and violation handling follow the compatible runtime's documented contract.
+
+Allowing a destination for a secret never grants network access: the destination allowlist does not expand sandbox network policy, and `TAU_LAN_HOSTS` remains the only private-network exception.
+
+### Interaction with env-file forwarding
+
+`TAU_ENV_FILE` remains trusted executable host configuration. When a name is declared both in the env file and as a project secret, the ordinary value is suppressed from raw forwarding regardless of source order, and the protected source supplies the guest variable.
+
 ## How It Works
 
 ```
@@ -78,6 +164,7 @@ msb home volume          ───────► /home/tau                  (in
 msb sessions volume      ───────► /var/lib/tau-sandbox/sessions (linked from ~/.tau)
 msb logs volume          ───────► /var/lib/tau-sandbox/logs  (linked from ~/.tau)
 (home volume state)      ───────► ~/.tau/trust.json          (read-write, isolated)
+~/.megali/secrets.{env,yaml} ──► generated policy → msb (never mounted; guest sees $MSB_* placeholders)
 
 podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
 ```
@@ -88,6 +175,7 @@ podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
 - **Writable project config synchronized from the host.** Existing top-level `~/.tau` entries are mounted read-only at a bootstrap path and refreshed into the persistent project home on every start. Tau can atomically update providers, model choices, thinking effort, settings, and other local config during a run without changing the host; host-managed entries return to the host version on restart. `~/.agents` remains read-only, and `credentials.json` alone stays shared and writable so rotated OAuth tokens remain valid.
 - **Isolated sessions, logs, and trust.** Tau config, history, diagnostics, and project trust decisions persist per project rather than modifying host state.
 - **Transparent pair-coding.** Because the project directory is a bind mount, your host editor and the sandbox agent see the same files simultaneously.
+- **Protected project secrets never enter the guest.** The paired sources stay host-only; the launcher hands the runtime a generated policy, and the guest sees only `$MSB_<NAME>` placeholders substituted for policy-allowed requests.
 
 ## Architecture
 
@@ -121,6 +209,7 @@ All settings are controlled via environment variables:
 | `TAU_CONFIG_DIR`   | nearest ancestor `.tau`, else `~/.tau` | Host Tau config refreshed at each start; when unset, the nearest ancestor directory containing a `.tau` config dir is used; `credentials.json` remains shared |
 | `TAU_AGENTS_DIR`   | `~/.agents`         | Host `.agents` resources, mounted read-only at `/home/tau/.agents` |
 | `TAU_ENV_FILE`     | `~/.env`            | Env file whose variables are forwarded into the sandbox             |
+| `TAU_PROJECTS_DIR` | `${HOME}/Projects`  | Projects root for protected project-secret discovery; an explicitly empty value is invalid and a relative value resolves from the launch directory |
 | `TAU_CPUS`         | `4`                 | Virtual CPUs for the sandbox                                        |
 | `TAU_MEM`          | `8G`                | Memory for the sandbox                                              |
 | `TAU_PIDS`         | `1024`              | Process (nproc) limit inside the sandbox                            |
@@ -132,14 +221,16 @@ When `TAU_CONFIG_DIR` is not set, `run.sh` walks up from the launch directory an
 
 ### Environment Variables
 
-Variables defined in `~/.env` (or the path set by `TAU_ENV_FILE`) are automatically forwarded into the sandbox. This is how you pass API keys (`VLLM_API_KEY`, `OPENROUTER_API_KEY`, etc.) without baking them into the image.
-
-Example `~/.env`:
+Variables defined in `~/.env` (or the path set by `TAU_ENV_FILE`) are automatically forwarded into the sandbox as real guest values. This suits ordinary configuration — feature flags, defaults, mirrors:
 
 ```
-OPENROUTER_API_KEY=sk-or-...
-VLLM_API_KEY=...
+PIP_DEFAULT_TIMEOUT=60
+UV_CONCURRENT_DOWNLOADS=4
 ```
+
+> **Warning:** raw forwarding is the wrong tool for API keys you intend to protect. A raw-forwarded value is real plaintext inside the guest, readable by any command it runs. Declare such credentials as [protected project secrets](#protected-project-secrets) instead; they reach the guest only as placeholders.
+
+A name that is also declared as a project secret is suppressed from raw forwarding; the protected source supplies the guest variable. `TAU_ENV_FILE` itself remains trusted executable host configuration.
 
 ### Network Access
 
@@ -150,6 +241,8 @@ TAU_LAN_HOSTS=192.168.1.100 tau-sandbox tau
 ```
 
 Agents may connect to each listed address on any port or protocol while all other private-network addresses remain blocked. No guest ports are published, so this does not permit inbound connections to the sandbox.
+
+Allowing a destination in a secret's policy never grants network access: secret destinations do not expand sandbox network policy, and `TAU_LAN_HOSTS` remains the only private-network exception.
 
 ### Sandbox Environment Variables
 
@@ -181,6 +274,8 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 
 The `/workspace` mount uses `host-perms=mirror`: files and directories created or chmod'd inside the sandbox keep their rwx bits on the host inode, so scripts stay executable and git's exec-bit tracking stays consistent. Only ordinary rwx bits are mirrored — ownership, file type, and setuid/setgid are not, and an owner-access floor always applies. Other exports keep the sandbox's default private metadata policy, which materializes guest-created files as owner-only (`600`/`700`) on the host.
 
+Project-secret sources (`~/.<project>/secrets.env` and `secrets.yaml`) are never mounted, copied, snapshotted, or built into the image; they stay host-only and only generated policy reaches the runtime.
+
 ### Host Config and Isolated State
 
 `run.sh` copies existing regular top-level host `~/.tau` files and directories into a temporary host-side snapshot, excluding credentials, sessions, logs, trust-store files, and internal synchronization metadata. Symlinks at every depth are dereferenced while the host paths are available, so linked skills, extensions, themes, prompts, and other config become ordinary snapshot files and directories; dangling links cause startup to fail rather than silently installing broken resources. Snapshot entries are mounted individually and read-only under `/etc/tau-sandbox/bootstrap/tau`. On every start, the entrypoint replaces host-managed project copies with the current host versions and removes resources deleted from the host. Config created only inside the sandbox remains persistent. Sandbox edits to host-managed config are writable during a run but are replaced from the host at the next start.
@@ -205,7 +300,8 @@ Host sessions and logs are excluded and replaced by per-project named volumes. T
 | Agent modifies the image rootfs    | Root writes are permission-limited and the writable overlay is discarded after every run; `/tmp` is a separate tmpfs                        |
 | Network exfiltration               | Public internet, gateway DNS, and only hosts listed in `TAU_LAN_HOSTS` are allowed for egress; other private addresses and all unpublished inbound traffic are denied |
 | Persistent volume as attack vector | Volume is microsandbox-managed, not a host bind mount. Intra-project persistence of malicious files is possible but contained                |
-| Secrets leak through images        | API keys are forwarded per-run from host env; never baked into the image                                                                    |
+| Secrets leak through images        | Credentials are never baked into the image; protected project secrets reach the guest only as runtime placeholders                            |
+| Agent reads protected API keys     | Project secrets appear in the guest only as `$MSB_<NAME>` placeholders; the runtime substitutes real values only for the policy-allowed destinations and request locations of each secret |
 
 ## Reset
 
@@ -214,6 +310,8 @@ Host sessions and logs are excluded and replaced by per-project named volumes. T
 ```
 
 This removes the project's home, session, and log volumes: installed tools, isolated history, custom `.bashrc` edits, and other per-project state. Host `~/.tau`, `~/.agents`, and credentials remain.
+
+`--reset` bypasses secret discovery entirely: it removes the volumes without reading, validating, or gating on the project-secret sources, so invalid secrets or an incompatible runtime never block a reset.
 
 ## Testing
 
@@ -226,12 +324,13 @@ The test suite covers:
 - **Unit tests** — script existence and syntax, Containerfile directives, Makefile targets, config files, run.sh flag generation, package-approval flow
 - **Integration tests** — image build/load, filesystem layout, host-config synchronization, atomic provider writes, credential writes, isolated sessions/logs, persistence, and volume isolation
 - **Security tests** — security flags, mount allowlist, dangerous-character rejection
+- **Project-secret tests** — exact-directory mapping, source grammars and reserved names, exposure preflight, runtime compatibility gate, placeholder injection, and forwarding precedence
 
 Integration tests build the image once per session and require `msb` and podman. Tests are automatically skipped when either is not available.
 
 ## Requirements
 
-- [microsandbox](https://docs.microsandbox.dev/quickstart) CLI (Linux needs KVM; macOS needs Apple Silicon)
+- [microsandbox](https://docs.microsandbox.dev/quickstart) CLI (Linux needs KVM; macOS needs Apple Silicon). For protected project secrets, a version in `>=0.6.12,<1.0.0` is required only when a present `secrets.env`/`secrets.yaml` pair exists.
 - podman (used only to build the OCI image)
 - Bash 4+
 

@@ -164,3 +164,146 @@ def test_packages_file_rejects_command_injection(tmp_path):
         assert result.returncode == 1, f"payload {payload!r} was accepted"
         assert "dangerous characters" in result.stderr
         assert not podman_log, f"build ran for payload {payload!r}"
+
+
+# --- Project-secret exposure and non-disclosure through the launcher ---
+
+from test_run import (  # noqa: E402
+    BASE_IMAGE,
+    DUMMY_VALUE,
+    _secret_run_line,
+    invoke_run,
+    make_secret_project,
+)
+
+
+def test_env_alias_and_trusted_instrumentation_contract(tmp_path):
+    """A TAU_ENV_FILE aliasing the value source is rejected before it is
+    sourced, so its command substitution never executes; trusted ordinary
+    configuration's xtrace and DEBUG traps can never observe protected
+    values; and a deliberate trusted read stays explicitly outside the
+    non-disclosure boundary (its output is the only place the value
+    appears)."""
+    marker = tmp_path / "pwned"
+    home, proj, secret = make_secret_project(
+        tmp_path,
+        env_text=f"KEY={DUMMY_VALUE}\nPWN=$(touch {marker})\n",
+        yaml_text=(
+            "KEY:\n  allow:\n    - api.example.com\n"
+            "PWN:\n  allow:\n    - api.example.com\n"
+        ),
+    )
+    alias = tmp_path / "alias.env"
+    alias.symlink_to(secret / "secrets.env")
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
+        env={"TAU_ENV_FILE": str(alias)},
+    )
+    assert result.returncode == 1
+    assert "env-source-alias" in result.stderr
+    assert not marker.exists()
+    assert not any(line.startswith("msb run") for line in msb_log)
+
+    # Trusted ordinary configuration: xtrace on, a DEBUG trap probing the
+    # synthetic source namespace, and one deliberate secret read.
+    env_file = home / ".env"
+    env_file.write_text(
+        "set -x\n"
+        "trap 'printf \"DBG:%s\\n\" \"${TAU_SANDBOX_SECRET_SOURCE_0:-unset}\" >&2' DEBUG\n"
+        "set +x\n"
+        f"printf 'TRUSTED_READ=%s\\n' \"$(head -n1 {secret}/secrets.env | cut -d= -f2-)\"\n"
+        "set -x\n"
+        "OTHER=ok\n"
+    )
+    result, msb_log, _ = invoke_run("bash", cwd=proj, home=home, images=(BASE_IMAGE,))
+    assert result.returncode == 0, result.stderr
+    trusted = [line for line in result.stdout.splitlines() if line.startswith("TRUSTED_READ=")]
+    assert trusted == [f"TRUSTED_READ={DUMMY_VALUE}"]
+    # The deliberate trusted read is the only occurrence anywhere.
+    assert result.stdout.count(DUMMY_VALUE) == 1
+    assert DUMMY_VALUE not in result.stderr
+    dbg = [line for line in result.stderr.splitlines() if line.startswith("DBG:")]
+    assert dbg
+    assert set(dbg) == {"DBG:unset"}
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert DUMMY_VALUE not in run_line
+    assert "-e OTHER=ok" in run_line
+
+
+def test_no_launcher_channel_contains_dummy_value(tmp_path):
+    """The launcher never causally places a project value in its output,
+    argv, image inputs, mounts, generated policy, or raw guest environment
+    arguments. Values reach only the final runtime subprocess environment,
+    and a simulated reflected service response is guest/service data, not
+    launcher placement."""
+    home, proj, secret = make_secret_project(tmp_path)
+    trace = tmp_path / "secret-trace"
+    # No cached image: the Podman build channel is exercised too.
+    result, msb_log, podman_log = invoke_run(
+        "bash", cwd=proj, home=home,
+        env={"MSB_SECRET_TRACE": str(trace), "MSB_REFLECT": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert any(line.startswith("podman build") for line in podman_log)
+
+    # The reflected response is the only stdout occurrence: guest/service
+    # data, explicitly outside the launcher's causal guarantee.
+    reflected = [
+        line for line in result.stdout.splitlines()
+        if line.startswith("REFLECTED_RESPONSE=")
+    ]
+    assert reflected == [f"REFLECTED_RESPONSE={DUMMY_VALUE}"]
+    assert result.stdout.count(DUMMY_VALUE) == 1
+    assert DUMMY_VALUE not in result.stderr
+    for line in msb_log:
+        assert DUMMY_VALUE not in line
+    for line in podman_log:
+        assert DUMMY_VALUE not in line
+
+    run_line = _secret_run_line(msb_log)
+    assert run_line is not None
+    assert DUMMY_VALUE not in run_line
+    assert "-e KEY=" not in run_line
+
+    # The generated policy carries names, references, and destinations
+    # only; the value exists solely in the final runtime's environment.
+    text = trace.read_text()
+    conf = text.split("BEGIN_CONF\n", 1)[1].split("END_CONF\n", 1)[0]
+    assert DUMMY_VALUE not in conf
+    assert '"KEY":' in conf
+    assert "${TAU_SANDBOX_SECRET_SOURCE_0}" in conf
+    sources = [
+        line for line in text.splitlines()
+        if line.startswith("TAU_SANDBOX_SECRET_SOURCE_")
+    ]
+    assert sources == [f"TAU_SANDBOX_SECRET_SOURCE_0={DUMMY_VALUE}"]
+
+
+def test_secret_hosts_do_not_add_network_rules(tmp_path):
+    """Policy destinations never expand sandbox network policy: with no
+    TAU_LAN_HOSTS exception the runtime invocation carries no --net-rule at
+    all, and an explicit LAN exception remains the only rule added."""
+    home, proj, secret = make_secret_project(
+        tmp_path,
+        yaml_text='KEY:\n  allow:\n    - api.example.com\n    - "*.internal.example"\n',
+    )
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,), env={"TAU_LAN_HOSTS": ""},
+    )
+    assert result.returncode == 0, result.stderr
+    run_line = _secret_run_line(msb_log)
+    assert run_line is not None
+    assert "--net public" in run_line
+    assert "--net-rule" not in run_line
+    assert "api.example.com" not in run_line
+    assert "internal.example" not in run_line
+
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
+        env={"TAU_LAN_HOSTS": "10.0.0.5"},
+    )
+    assert result.returncode == 0, result.stderr
+    run_line = _secret_run_line(msb_log)
+    assert run_line.count("--net-rule") == 1
+    assert "--net-rule allow@10.0.0.5" in run_line
+    assert "api.example.com" not in run_line

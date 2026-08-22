@@ -33,6 +33,14 @@ fi
 CONFIG_DIR="${CONFIG_DIR:-${HOME}/.tau}"
 AGENTS_DIR="${TAU_AGENTS_DIR:-${HOME}/.agents}"
 ENV_FILE="${TAU_ENV_FILE:-${HOME}/.env}"
+# Resolve a caller-supplied relative TAU_ENV_FILE against the launch
+# directory before any use: present-pair launches source under `set -o
+# posix`, where `source` looks up slash-less names through PATH only, and
+# the alias check below compares absolute forms.
+case "$ENV_FILE" in
+    /*) ;;
+    *) ENV_FILE="$(pwd)/$ENV_FILE" ;;
+esac
 CPUS="${TAU_CPUS:-4}"
 MEM="${TAU_MEM:-8G}"
 PIDS="${TAU_PIDS:-1024}"
@@ -40,6 +48,12 @@ PIDS="${TAU_PIDS:-1024}"
 # network profile; empty (default) keeps every private address denied.
 LAN_HOSTS="${TAU_LAN_HOSTS:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Raw lexical exposure sources, captured before the canonicalization below:
+# the project-secrets library resolves physical identities itself, and the
+# captured bootstrap entry list must reflect exactly the entries the launch
+# will snapshot.
+RAW_CONFIG_DIR="$CONFIG_DIR"
+RAW_AGENTS_DIR="$AGENTS_DIR"
 [ -d "$CONFIG_DIR" ] && CONFIG_DIR="$(realpath "$CONFIG_DIR")"
 [ -d "$AGENTS_DIR" ] && AGENTS_DIR="$(realpath "$AGENTS_DIR")"
 
@@ -93,11 +107,100 @@ PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-${PROJECT_HASH}"
 SESSIONS_VOLUME="tau-sessions-${PROJECT_NAME}-${PROJECT_HASH}"
 LOGS_VOLUME="tau-logs-${PROJECT_NAME}-${PROJECT_HASH}"
 
-# Handle --reset flag: remove all per-project volumes and exit.
+# Handle --reset flag: remove all per-project volumes and exit. This runs
+# before any project-secret discovery or library call, so a reset performs
+# no secret, version, or configuration work even with invalid sources or
+# an incompatible runtime.
 if [ "${1:-}" = "--reset" ]; then
     msb volume rm "$PERSIST_VOLUME" "$SESSIONS_VOLUME" "$LOGS_VOLUME" >/dev/null 2>&1 || true
     echo "Volumes $PERSIST_VOLUME, $SESSIONS_VOLUME, and $LOGS_VOLUME removed."
     exit 0
+fi
+
+# --- Project secrets (exact-directory pair) ---
+# The host-only library owns discovery, exposure preflight, runtime trust,
+# metadata validation, and the protected final invocation. It is sourced
+# here but never called before the --reset handler above.
+# shellcheck source=lib/project-secrets.sh
+source "$SCRIPT_DIR/lib/project-secrets.sh"
+
+BOOTSTRAP_STAGE=""
+# One idempotent exit cleanup, registered for every exit path: remove the
+# bootstrap snapshot this launcher created, then the library's staging
+# area. The library's exit handler composes with this trap by running the
+# previously installed action after its own cleanup, so both run on every
+# exit, and the exit status is never changed.
+cleanup() {
+    if [ -n "$BOOTSTRAP_STAGE" ]; then
+        rm -rf -- "$BOOTSTRAP_STAGE"
+        BOOTSTRAP_STAGE=""
+    fi
+    project_secrets_cleanup || true
+    return 0
+}
+trap cleanup EXIT
+
+# TAU_PROJECTS_DIR: unset uses the default ${HOME}/Projects; an explicitly
+# empty value is invalid (the library rejects it); relative values resolve
+# from the launch directory.
+if [ -n "${TAU_PROJECTS_DIR+x}" ]; then
+    PROJECTS_MODE="explicit"
+    PROJECTS_VALUE="$TAU_PROJECTS_DIR"
+else
+    PROJECTS_MODE="default"
+    PROJECTS_VALUE=""
+fi
+project_secrets_discover "$(pwd)" "$HOME" "$PROJECTS_MODE" "$PROJECTS_VALUE" || exit 1
+
+# One captured list of the exact top-level config entries after the
+# existing exclusions. The same list registers exposure descriptors for a
+# present pair and later creates the snapshot mounts, so the security scan
+# and the copy can never diverge.
+BOOTSTRAP_ENTRIES=()
+if [ -d "$RAW_CONFIG_DIR" ]; then
+    shopt -s dotglob nullglob
+    for entry in "$RAW_CONFIG_DIR"/*; do
+        name="${entry##*/}"
+        case "$name" in
+            credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending|.host-config-bootstrapped|.host-config-synced)
+                continue
+                ;;
+        esac
+        BOOTSTRAP_ENTRIES+=("$entry")
+    done
+    shopt -u dotglob nullglob
+fi
+
+MSB_BIN="msb"
+if [ "$PROJECT_SECRETS_PAIR_STATE" = "present" ]; then
+    # Present-pair lifecycle in the library's required order: every exposure
+    # descriptor is registered before the preflight; the preflight and the
+    # helper/runtime trust gates complete before staging and metadata
+    # validation; staging is created pre-freeze. All of it precedes image,
+    # environment, snapshot, and mount work below, so a present pair can
+    # never build, source, copy, or mount anything before it is proven safe.
+    for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
+        project_secrets_register_exposed_source tree-dereference "$entry" || exit 1
+    done
+    project_secrets_register_exposed_source tree-no-follow "$(pwd)" || exit 1
+    project_secrets_register_exposed_source tree-no-follow "$SCRIPT_DIR" || exit 1
+    if [ -e "$RAW_AGENTS_DIR" ] || [ -L "$RAW_AGENTS_DIR" ]; then
+        project_secrets_register_exposed_source tree-no-follow "$RAW_AGENTS_DIR" || exit 1
+    fi
+    if [ -e "$RAW_CONFIG_DIR/credentials.json" ] || [ -L "$RAW_CONFIG_DIR/credentials.json" ]; then
+        project_secrets_register_exposed_source file "$RAW_CONFIG_DIR/credentials.json" || exit 1
+    fi
+    project_secrets_register_exposed_source file "$SCRIPT_DIR/config/APPEND_SYSTEM.md" || exit 1
+    project_secrets_register_projects_root_scan || exit 1
+    project_secrets_preflight_exposure || exit 1
+    project_secrets_pin_helpers "$PATH" || exit 1
+    project_secrets_resolve_runtime "$PATH" || exit 1
+    project_secrets_check_runtime || exit 1
+    project_secrets_create_staging || exit 1
+    project_secrets_validate_metadata || exit 1
+    # A sourced PATH change can never redirect a present-pair runtime
+    # operation: every msb call below uses this pinned absolute executable.
+    MSB_BIN="$PROJECT_SECRETS_MSB_PATH"
 fi
 
 # --- Per-project package handling ---
@@ -187,10 +290,10 @@ prune_superseded_package_images() {
             "localhost/tau-agent-isolated-${IMAGE_PROJECT_NAME}-${PKG_HASH}:latest" | \
             "localhost/tau-agent-isolated-${IMAGE_PROJECT_NAME}-"${hex8}"-${PKG_HASH}:latest")
                 [ "$cached_ref" = "$IMAGE_REF" ] && continue
-                msb rmi "$cached_ref" >/dev/null 2>&1 || true
+                "$MSB_BIN" rmi "$cached_ref" >/dev/null 2>&1 || true
                 ;;
         esac
-    done < <(msb images -q)
+    done < <("$MSB_BIN" images -q)
 }
 
 # Image reference resolution.
@@ -224,7 +327,7 @@ else
 fi
 
 # Build and load the image into the microsandbox cache if it is missing.
-if [ "${SKIP_IMAGE_CHECK:-0}" != "1" ] && ! msb images -q | grep -qx "$IMAGE_REF"; then
+if [ "${SKIP_IMAGE_CHECK:-0}" != "1" ] && ! "$MSB_BIN" images -q | grep -qx "$IMAGE_REF"; then
     if [ "$HAS_PACKAGES" -eq 1 ] && [ -t 0 ]; then
         echo ""
         echo "[!] Building sandbox image with extra packages:"
@@ -252,7 +355,7 @@ if [ "${SKIP_IMAGE_CHECK:-0}" != "1" ] && ! msb images -q | grep -qx "$IMAGE_REF
     else
         podman build -t "$IMAGE_NAME" "$SCRIPT_DIR"
     fi
-    podman save "$IMAGE_NAME" | msb load
+    podman save "$IMAGE_NAME" | "$MSB_BIN" load
     if [ "$HAS_PACKAGES" -eq 1 ]; then
         prune_superseded_package_images
     fi
@@ -263,6 +366,11 @@ fi
 # Values pass through as arguments to msb; they are never echoed by this
 # script and never baked into the image.
 ENV_ARGS=()
+# A present pair vets the environment file before it is sourced: a
+# lexical, symlink, or hard-link alias of the value source never executes.
+if [ "$PROJECT_SECRETS_PAIR_STATE" = "present" ]; then
+    project_secrets_validate_env_source "$ENV_FILE" || exit 1
+fi
 if [ -f "$ENV_FILE" ]; then
     set -a
     # shellcheck source=/dev/null
@@ -271,6 +379,16 @@ if [ -f "$ENV_FILE" ]; then
 
     while IFS= read -r key; do
         [[ -z "$key" ]] && continue
+        if [ "$PROJECT_SECRETS_PAIR_STATE" = "present" ]; then
+            # An ordinary name matching a project secret is suppressed from
+            # raw forwarding; the protected source supplies the guest value.
+            # Every forwarded name is recorded so the library's synthetic
+            # source allocation skips it.
+            if project_secrets_is_guest_name "$key"; then
+                continue
+            fi
+            project_secrets_note_ordinary_guest_name "$key" || exit 1
+        fi
         ENV_ARGS+=(-e "${key}=${!key:-}")
     done < <(awk '
         /^[[:space:]]*#/ { next }
@@ -306,41 +424,28 @@ MOUNT_ARGS=(
     -v "$(pwd):/workspace:host-perms=mirror"
     -v "$PERSIST_VOLUME:/home/tau"
 )
-BOOTSTRAP_STAGE=""
-cleanup_bootstrap_stage() {
-    if [ -n "$BOOTSTRAP_STAGE" ]; then
-        rm -rf -- "$BOOTSTRAP_STAGE"
-    fi
-}
-trap cleanup_bootstrap_stage EXIT
 
-if [ -d "$CONFIG_DIR" ]; then
-    shopt -s dotglob nullglob
-    for entry in "$CONFIG_DIR"/*; do
-        name="${entry##*/}"
-        case "$name" in
-            credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending|.host-config-bootstrapped|.host-config-synced)
-                continue
-                ;;
-        esac
-        resolved_entry="$(realpath -e "$entry" 2>/dev/null || true)"
-        if [ ! -f "$resolved_entry" ] && [ ! -d "$resolved_entry" ]; then
-            continue
-        fi
-        if [ -z "$BOOTSTRAP_STAGE" ]; then
-            BOOTSTRAP_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/tau-sandbox-bootstrap.XXXXXX")"
-        fi
-        # Dereference both top-level and nested links while still on the host,
-        # where absolute host paths are meaningful. The VM receives only the
-        # resulting snapshot, never broken links back into the host filesystem.
-        if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/$name"; then
-            echo "Error: failed to snapshot host Tau config entry: $entry" >&2
-            exit 1
-        fi
-        MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
-    done
-    shopt -u dotglob nullglob
-fi
+# The captured bootstrap entry list drives the snapshot mounts: each entry
+# is copied with links recursively dereferenced into a private temporary
+# snapshot and mounted individually read-only under the bootstrap directory.
+for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
+    name="${entry##*/}"
+    resolved_entry="$(realpath -e "$entry" 2>/dev/null || true)"
+    if [ ! -f "$resolved_entry" ] && [ ! -d "$resolved_entry" ]; then
+        continue
+    fi
+    if [ -z "$BOOTSTRAP_STAGE" ]; then
+        BOOTSTRAP_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/tau-sandbox-bootstrap.XXXXXX")"
+    fi
+    # Dereference both top-level and nested links while still on the host,
+    # where absolute host paths are meaningful. The VM receives only the
+    # resulting snapshot, never broken links back into the host filesystem.
+    if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/$name"; then
+        echo "Error: failed to snapshot host Tau config entry: $entry" >&2
+        exit 1
+    fi
+    MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
+done
 if [ -f "$CONFIG_DIR/credentials.json" ] && [ ! -L "$CONFIG_DIR/credentials.json" ]; then
     MOUNT_ARGS+=(-v "$CONFIG_DIR/credentials.json:/etc/tau-sandbox/shared/credentials.json")
     ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=1")
@@ -373,18 +478,28 @@ if [ -n "$LAN_HOSTS" ]; then
     done
 fi
 
-msb run \
-    "${MOUNT_ARGS[@]}" \
-    -c "$CPUS" \
-    -m "$MEM" \
-    --rlimit "nproc=${PIDS}" \
-    --security restricted \
-    --tmpfs /tmp \
-    --user 1000:1000 \
-    --net public \
-    "${NET_RULES[@]}" \
-    --label "project=${PROJECT_NAME}" \
-    -w /workspace \
-    "${ENV_ARGS[@]}" \
-    "$IMAGE_REF" \
+RUN_ARGS=(
+    "${MOUNT_ARGS[@]}"
+    -c "$CPUS"
+    -m "$MEM"
+    --rlimit "nproc=${PIDS}"
+    --security restricted
+    --tmpfs /tmp
+    --user 1000:1000
+    --net public
+    "${NET_RULES[@]}"
+    --label "project=${PROJECT_NAME}"
+    -w /workspace
+    "${ENV_ARGS[@]}"
+    "$IMAGE_REF"
     -- "$@"
+)
+if [ "$PROJECT_SECRETS_PAIR_STATE" = "present" ]; then
+    # The library inserts exactly one generated --secret-conf immediately
+    # after `run`, preserves the guest argv after `--`, performs the final
+    # value pass in an isolated subprocess, and returns the runtime's exit
+    # status; staging cleanup runs on every exit through the trap above.
+    project_secrets_exec_runtime run "${RUN_ARGS[@]}"
+else
+    "$MSB_BIN" run "${RUN_ARGS[@]}"
+fi
