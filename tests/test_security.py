@@ -177,83 +177,22 @@ from test_run import (  # noqa: E402
 )
 
 
-def test_env_alias_and_trusted_instrumentation_contract(tmp_path):
-    """A TAU_ENV_FILE aliasing the value source is rejected before it is
-    sourced, so its command substitution never executes; trusted ordinary
-    configuration's xtrace and DEBUG traps can never observe protected
-    values; and a deliberate trusted read stays explicitly outside the
-    non-disclosure boundary (its output is the only place the value
-    appears)."""
-    marker = tmp_path / "pwned"
-    home, proj, secret = make_secret_project(
-        tmp_path,
-        env_text=f"KEY={DUMMY_VALUE}\nPWN=$(touch {marker})\n",
-        yaml_text=(
-            "KEY:\n  allow:\n    - api.example.com\n"
-            "PWN:\n  allow:\n    - api.example.com\n"
-        ),
-    )
-    alias = tmp_path / "alias.env"
-    alias.symlink_to(secret / "secrets.env")
-    result, msb_log, _ = invoke_run(
-        "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
-        env={"TAU_ENV_FILE": str(alias)},
-    )
-    assert result.returncode == 1
-    assert "env-source-alias" in result.stderr
-    assert not marker.exists()
-    assert not any(line.startswith("msb run") for line in msb_log)
-
-    # Trusted ordinary configuration: xtrace on, a DEBUG trap probing the
-    # synthetic source namespace, and one deliberate secret read.
-    env_file = home / ".env"
-    env_file.write_text(
-        "set -x\n"
-        "trap 'printf \"DBG:%s\\n\" \"${TAU_SANDBOX_SECRET_SOURCE_0:-unset}\" >&2' DEBUG\n"
-        "set +x\n"
-        f"printf 'TRUSTED_READ=%s\\n' \"$(head -n1 {secret}/secrets.env | cut -d= -f2-)\"\n"
-        "set -x\n"
-        "OTHER=ok\n"
-    )
-    result, msb_log, _ = invoke_run("bash", cwd=proj, home=home, images=(BASE_IMAGE,))
-    assert result.returncode == 0, result.stderr
-    trusted = [line for line in result.stdout.splitlines() if line.startswith("TRUSTED_READ=")]
-    assert trusted == [f"TRUSTED_READ={DUMMY_VALUE}"]
-    # The deliberate trusted read is the only occurrence anywhere.
-    assert result.stdout.count(DUMMY_VALUE) == 1
-    assert DUMMY_VALUE not in result.stderr
-    dbg = [line for line in result.stderr.splitlines() if line.startswith("DBG:")]
-    assert dbg
-    assert set(dbg) == {"DBG:unset"}
-    run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert DUMMY_VALUE not in run_line
-    assert "-e OTHER=ok" in run_line
-
-
 def test_no_launcher_channel_contains_dummy_value(tmp_path):
     """The launcher never causally places a project value in its output,
-    argv, image inputs, mounts, generated policy, or raw guest environment
-    arguments. Values reach only the final runtime subprocess environment,
-    and a simulated reflected service response is guest/service data, not
-    launcher placement."""
+    argv, image inputs, mounts, or raw guest environment arguments. The
+    value exists only in the runtime subprocess environment, which the
+    runtime's own --secret-conf handling resolves into placeholders."""
     home, proj, secret = make_secret_project(tmp_path)
-    trace = tmp_path / "secret-trace"
+    env_log = tmp_path / "msb-env.log"
     # No cached image: the Podman build channel is exercised too.
     result, msb_log, podman_log = invoke_run(
         "bash", cwd=proj, home=home,
-        env={"MSB_SECRET_TRACE": str(trace), "MSB_REFLECT": "1"},
+        env={"MSB_ENV_LOG": str(env_log)},
     )
     assert result.returncode == 0, result.stderr
     assert any(line.startswith("podman build") for line in podman_log)
 
-    # The reflected response is the only stdout occurrence: guest/service
-    # data, explicitly outside the launcher's causal guarantee.
-    reflected = [
-        line for line in result.stdout.splitlines()
-        if line.startswith("REFLECTED_RESPONSE=")
-    ]
-    assert reflected == [f"REFLECTED_RESPONSE={DUMMY_VALUE}"]
-    assert result.stdout.count(DUMMY_VALUE) == 1
+    assert DUMMY_VALUE not in result.stdout
     assert DUMMY_VALUE not in result.stderr
     for line in msb_log:
         assert DUMMY_VALUE not in line
@@ -265,18 +204,9 @@ def test_no_launcher_channel_contains_dummy_value(tmp_path):
     assert DUMMY_VALUE not in run_line
     assert "-e KEY=" not in run_line
 
-    # The generated policy carries names, references, and destinations
-    # only; the value exists solely in the final runtime's environment.
-    text = trace.read_text()
-    conf = text.split("BEGIN_CONF\n", 1)[1].split("END_CONF\n", 1)[0]
-    assert DUMMY_VALUE not in conf
-    assert '"KEY":' in conf
-    assert "${TAU_SANDBOX_SECRET_SOURCE_0}" in conf
-    sources = [
-        line for line in text.splitlines()
-        if line.startswith("TAU_SANDBOX_SECRET_SOURCE_")
-    ]
-    assert sources == [f"TAU_SANDBOX_SECRET_SOURCE_0={DUMMY_VALUE}"]
+    # The value reaches only the runtime's process environment.
+    runtime_env = env_log.read_text().splitlines()
+    assert f"KEY={DUMMY_VALUE}" in runtime_env
 
 
 def test_secret_hosts_do_not_add_network_rules(tmp_path):

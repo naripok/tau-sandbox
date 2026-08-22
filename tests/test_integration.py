@@ -19,8 +19,9 @@ import pytest
 from conftest import (
     ProjectSecretFixture,
     TEST_IMAGE_REF,
-    skip_without_compatible_msb_secrets,
     skip_without_msb,
+    skip_without_podman,
+    skip_without_virtualization,
     volume_names_for,
 )
 
@@ -456,35 +457,34 @@ class TestReset:
 
 
 @pytest.mark.usefixtures("loaded_image")
-@skip_without_compatible_msb_secrets
+@skip_without_msb
+@skip_without_podman
+@skip_without_virtualization
 class TestProjectSecretRuntimeBoundary:
-    """Real compatible-runtime project-secret boundary.
+    """Real-runtime project-secret boundary.
 
     These tests boot the session image through the real launcher and a
-    real compatible microsandbox runtime with a present exact-directory
-    secret pair, and prove exactly what is observable at this repository's
-    boundary: the guest receives generated placeholders instead of source
-    values, synthetic source variables never reach the guest, reserved
-    names are rejected before any boot, and the disposable fixture removes
-    its host secret directory and volumes.
+    real microsandbox runtime with a present exact-directory secret pair,
+    and prove exactly what is observable at this repository's boundary:
+    the guest receives the runtime placeholder instead of the source
+    value, reserved names are rejected before any boot, and the
+    disposable fixture removes its host secret directory and volumes.
 
-    Runtime-internal remote substitution, DNS observation, TLS identity,
-    authority checks, and diagnostic redaction stay delegated to the
-    bounded microsandbox compatibility contract: deterministic fake-argv
-    coverage of the emitted policy already exists in the unit suite, and
-    this suite deliberately depends on no third-party echo service.
+    Policy parsing, remote substitution, DNS observation, TLS identity,
+    authority checks, and redaction are the runtime's documented
+    --secret-conf contract: the launcher passes the user's secrets.yaml
+    through unmodified, and this suite deliberately depends on no
+    third-party echo service.
     """
 
     def test_project_secret_is_guest_placeholder_only(self, tmp_path):
-        """A compatible runtime gives the guest only the generated
-        $MSB_<NAME> placeholder for a project secret, never the source
-        value.
+        """The runtime gives the guest only the $MSB_<NAME> placeholder
+        for a project secret, never the source value.
 
         This is the feature's core non-disclosure invariant: real
         credential bytes must never reach the guest environment, because
-        anything in the guest `env` is readable by arbitrary project code.
-        A missing placeholder or an appearing dummy value would void every
-        downstream guarantee (allowlist-only substitution, redaction)."""
+        anything in the guest `env` is readable by arbitrary project
+        code."""
         with ProjectSecretFixture(tmp_path) as secrets:
             result = run_sandbox(
                 secrets.project_dir,
@@ -497,78 +497,24 @@ class TestProjectSecretRuntimeBoundary:
         assert "dummy-project-api-key-123" not in result.stdout
         assert "dummy-project-api-key-123" not in result.stderr
 
-    def test_synthetic_sources_are_absent_from_guest_environment(self, tmp_path):
-        """No TAU_SANDBOX_SECRET_SOURCE_* name or value appears anywhere in
-        the guest environment.
-
-        The launcher exports real values only under synthetic source names
-        in the final exec'd runtime process; the runtime must resolve those
-        references itself and must never forward them into the VM. A leaked
-        source variable would hand the plaintext value to any guest
-        process and defeat the placeholder design entirely."""
-        with ProjectSecretFixture(tmp_path) as secrets:
-            result = run_sandbox(
-                secrets.project_dir, secrets.home, ["env"], set_home=True
-            )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        env_lines = result.stdout.splitlines()
-        assert not any(
-            line.startswith("TAU_SANDBOX_SECRET_SOURCE_") for line in env_lines
-        )
-        assert "dummy-project-api-key-123" not in result.stdout
-        assert "dummy-project-api-key-123" not in result.stderr
-
-    def test_literal_source_text_reaches_runtime_source_environment_exactly(
-        self, tmp_path
-    ):
-        """A printable ${OTHER}-shaped dummy value is handed to the runtime
-        source environment literally, and the real guest still sees only
-        the placeholder.
-
-        The launcher must never shell-expand a secret value: an expansion
-        would silently mutate the credential the runtime later substitutes.
-        The exact literal bytes reaching the runtime source environment are
-        proven deterministically by the fake-runtime launcher tests in
-        test_project_secrets.py; this real-runtime test proves the live
-        path accepts the special-character value (any launcher-side
-        expansion or grammar rejection would fail the launch) and that
-        neither the literal text nor any expansion artifact is observable
-        in the guest."""
-        env_text = "LITERAL_SOURCE_TEXT=${OTHER}!literal-value_42\n"
-        yaml_text = "LITERAL_SOURCE_TEXT:\n  allow:\n    - api.example.com\n"
-        with ProjectSecretFixture(
-            tmp_path, env_text=env_text, yaml_text=yaml_text
-        ) as secrets:
-            result = run_sandbox(
-                secrets.project_dir,
-                secrets.home,
-                ["printenv", "LITERAL_SOURCE_TEXT"],
-                set_home=True,
-            )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert result.stdout.strip() == "$MSB_LITERAL_SOURCE_TEXT"
-        for leaked in ("${OTHER}", "literal-value_42"):
-            assert leaked not in result.stdout
-            assert leaked not in result.stderr
-
-    def test_reserved_entrypoint_bash_and_runner_names_reject_before_boot(
-        self, tmp_path
-    ):
+    def test_reserved_names_reject_before_boot(self, tmp_path):
         """Representative reserved-name categories are rejected before any
         sandbox boots.
 
-        TAU_ENTRYPOINT_* is the image entrypoint's own scratch namespace,
-        BASH* covers names the shell interprets dynamically, and exact
-        runner-owned names (PATH) belong to process startup. A project
-        secret that took any of them would let the entrypoint or the shell
-        overwrite the placeholder with arbitrary scratch content, so the
-        guest could no longer trust the protected variable. The launcher
-        must reject all of them during metadata validation, before image,
-        environment, and mount work — so no guest command ever runs."""
-        reserved_names = ("TAU_ENTRYPOINT_STAGE", "BASH_ENV", "PATH")
+        Exact runner-owned names (PATH) and the TAU_ prefix (which covers
+        the entrypoint's TAU_ENTRYPOINT_ scratch namespace) belong to the
+        shell and launcher: a project secret that took any of them would
+        let the runtime overwrite process-startup state, so the launcher
+        must reject them before image, environment, and mount work."""
+        reserved_names = ("PATH", "TAU_ENTRYPOINT_STAGE", "BASH_ENV")
         for index, name in enumerate(reserved_names):
             env_text = f"{name}=dummy-project-api-key-123\n"
-            yaml_text = f"{name}:\n  allow:\n    - api.example.com\n"
+            yaml_text = (
+                f"{name}:\n"
+                f'  value: "${{{name}}}"\n'
+                "  allow:\n"
+                "    - api.example.com\n"
+            )
             with ProjectSecretFixture(
                 tmp_path / f"reserved-{index}",
                 env_text=env_text,
@@ -581,7 +527,8 @@ class TestProjectSecretRuntimeBoundary:
                     set_home=True,
                 )
             assert result.returncode != 0, f"{name} must be rejected"
-            assert "reserved-name" in result.stderr, result.stderr
+            assert "reserved" in result.stderr, result.stderr
+            assert name in result.stderr
             assert "BOOTED" not in result.stdout
 
     def test_external_secret_fixture_and_volumes_are_cleaned(self, tmp_path):
@@ -591,9 +538,7 @@ class TestProjectSecretRuntimeBoundary:
         The external secret directory is host-only state that must not
         outlive the test that created it: a stale pair would silently arm
         later launches from the same mapped directory, and stale volumes
-        would leak disk and cross-test state. The fixture is a plain
-        context manager, so this test observes the removal from outside
-        teardown instead of relying on invisible pytest fixture cleanup."""
+        would leak disk and cross-test state."""
         secrets = ProjectSecretFixture(tmp_path)
         with secrets:
             result = run_sandbox(
@@ -609,4 +554,4 @@ class TestProjectSecretRuntimeBoundary:
         listing = subprocess.run(
             ["msb", "volume", "ls"], capture_output=True, text=True
         )
-        assert not any(volume in listing.stdout for volume in secrets.volumes)
+        assert all(volume not in listing.stdout for volume in secrets.volumes)

@@ -3,7 +3,6 @@ import hashlib
 import os
 import pathlib
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -22,60 +21,9 @@ skip_without_podman = pytest.mark.skipif(
     reason="podman not found in PATH",
 )
 
-# The exact successful runtime-version contract the project-secrets launcher
-# enforces before it will inject anything into a real sandbox.
-MSB_VERSION_OUTPUT_RE = re.compile(r"msb ([0-9]+)\.([0-9]+)\.([0-9]+)")
-MSB_COMPATIBLE_MIN = (0, 6, 12)
-MSB_COMPATIBLE_MAX = (1, 0, 0)
-
-
-def compatible_msb_secrets() -> bool:
-    """True when the msb resolved from PATH satisfies the launcher's exact
-    successful runtime-version contract: one ``--version`` process through
-    the absolute executable, zero exit status, empty stderr, stdout exactly
-    ``msb MAJOR.MINOR.PATCH`` with zero or one trailing LF, decimal
-    components without leading zeros, and a version in [0.6.12, 1.0.0).
-
-    Real-runtime project-secret integration tests run only when this holds;
-    every deviation must skip rather than guess compatibility. The check
-    reads only the runtime's own version output — never an environment
-    secret."""
-    msb = shutil.which("msb")
-    if msb is None:
-        return False
-    try:
-        result = subprocess.run(
-            [os.path.abspath(msb), "--version"],
-            capture_output=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    if result.returncode != 0 or result.stderr:
-        return False
-    # A non-UTF-8 version line cannot match the ASCII contract; decode with
-    # replacement so any deviation skips instead of raising at import time.
-    content = result.stdout.decode(errors="replace")
-    if content.endswith("\n"):
-        content = content[:-1]
-    match = MSB_VERSION_OUTPUT_RE.fullmatch(content)
-    if match is None:
-        return False
-    raw = match.groups()
-    if any(part != "0" and part.startswith("0") for part in raw):
-        return False
-    version = tuple(int(part) for part in raw)
-    return MSB_COMPATIBLE_MIN <= version < MSB_COMPATIBLE_MAX
-
-
-def _missing_compatible_runtime_prerequisite() -> str | None:
-    """The exact missing real-runtime prerequisite for project-secret
-    integration tests, or None when msb, podman, hardware virtualization,
-    and a compatible msb version are all available."""
-    if not shutil.which("msb"):
-        return "msb not found in PATH"
-    if not shutil.which("podman"):
-        return "podman not found in PATH"
+def _missing_virtualization_prerequisite() -> str | None:
+    """The missing hardware-virtualization prerequisite for real-runtime
+    integration tests, or None when microsandbox can boot a microVM."""
     if sys.platform.startswith("linux"):
         if not (
             os.path.exists("/dev/kvm")
@@ -87,16 +35,14 @@ def _missing_compatible_runtime_prerequisite() -> str | None:
             return "macOS requires Apple Silicon"
     else:
         return f"unsupported platform for microsandbox: {sys.platform}"
-    if not compatible_msb_secrets():
-        return "msb version outside the compatible [0.6.12, 1.0.0) range"
     return None
 
 
-MISSING_COMPATIBLE_RUNTIME_PREREQUISITE = _missing_compatible_runtime_prerequisite()
-skip_without_compatible_msb_secrets = pytest.mark.skipif(
-    MISSING_COMPATIBLE_RUNTIME_PREREQUISITE is not None,
-    reason=MISSING_COMPATIBLE_RUNTIME_PREREQUISITE
-    or "all real-runtime project-secret prerequisites present",
+MISSING_VIRTUALIZATION_PREREQUISITE = _missing_virtualization_prerequisite()
+skip_without_virtualization = pytest.mark.skipif(
+    MISSING_VIRTUALIZATION_PREREQUISITE is not None,
+    reason=MISSING_VIRTUALIZATION_PREREQUISITE
+    or "hardware virtualization available",
 )
 
 
@@ -174,8 +120,16 @@ def volume_cleanup(tmp_path):
 
 # Non-sensitive dummy paired sources: a real runtime receives these exact
 # bytes, and the tests assert the guest never sees the dummy value itself.
+# The policy uses the runtime-native --secret-conf grammar: the launcher
+# passes it through unmodified and the runtime resolves ${NAME} from the
+# inherited launcher environment.
 PROJECT_SECRET_ENV = "TEST_PROJECT_API_KEY=dummy-project-api-key-123\n"
-PROJECT_SECRET_YAML = "TEST_PROJECT_API_KEY:\n  allow:\n    - api.example.com\n"
+PROJECT_SECRET_YAML = (
+    "TEST_PROJECT_API_KEY:\n"
+    '  value: "${TEST_PROJECT_API_KEY}"\n'
+    "  allow:\n"
+    "    - api.example.com\n"
+)
 
 
 class ProjectSecretFixture:

@@ -740,57 +740,37 @@ def _fenced_blocks(text: str) -> list[str]:
 
 def _example_blocks(readme: str) -> tuple[list[set[str]], list[set[str]]]:
     """Name sets of every documentation block shaped like a valid
-    secrets.env value example or a valid secrets.yaml policy example."""
+    secrets.env example (NAME=value lines) or a valid runtime-native
+    secrets.yaml example (NAME: headers with value:/allow: fields)."""
     env_names: list[set[str]] = []
     policy_names: list[set[str]] = []
-    name_re = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)$")
     value_re = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$")
-    dest_re = re.compile(
-        r"^(?:\"(\*\.[a-z0-9][a-z0-9.-]*)\"|(\*\.[a-z0-9][a-z0-9.-]*)|"
-        r"\"([a-z0-9][a-z0-9.-]*\.[a-z0-9][a-z0-9.-]*)\"|([a-z0-9][a-z0-9.-]*\.[a-z0-9][a-z0-9.-]*))$"
-    )
+    name_re = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):$")
     for block in _fenced_blocks(readme):
-        names: set[str] = set()
-        is_env = is_policy = False
-        inject_ok = {"headers", "basic_auth", "query_params"}
-        current: str | None = None
+        env: set[str] = set()
+        policy: set[str] = set()
+        is_env = bool(block.strip())
+        is_policy = bool(block.strip())
         for line in block.splitlines():
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
-            if line.startswith("    - ") and current in ("allow", "inject"):
-                item = line[len("    - ") :]
-                if current == "allow":
-                    if dest_re.match(item) is None:
-                        is_policy = False
-                        break
-                elif item not in inject_ok:
-                    is_policy = False
-                    break
-                continue
-            if line == "  allow:":
-                current, is_policy = "allow", True
-                continue
-            if line == "  inject:":
-                current = "inject"
-                is_policy = True
-                continue
-            m = name_re.match(line[:-1]) if line.endswith(":") else None
-            if m is not None:
-                names.add(m.group(1))
-                current = None
-                is_policy = True
-                continue
             m = value_re.match(line)
-            if m is not None and "\t" not in line and line.isprintable():
-                names.add(m.group(1))
-                is_env = True
+            if m is not None and line.isprintable():
+                env.add(m.group(1))
+                continue
+            if not line.startswith(" "):
+                m = name_re.match(line)
+                if m is not None:
+                    policy.add(m.group(1))
+                    continue
+            if line.startswith(("  value:", "  allow:", "  inject:", "    - ")):
                 continue
             is_env = is_policy = False
             break
-        if is_env and names:
-            env_names.append(names)
-        if is_policy and names and current != "name":
-            policy_names.append(names)
+        if is_env and env:
+            env_names.append(env)
+        if is_policy and policy:
+            policy_names.append(policy)
     return env_names, policy_names
 
 
@@ -839,51 +819,38 @@ def test_readme_has_valid_paired_examples_and_exact_mapping():
     assert any(env in policy_blocks for env in env_blocks)
 
 
-def test_readme_covers_grammar_and_reserved_names():
-    """Prove the README documents the value-source grammar constraints,
-    the restricted policy grammar (including the omitted-inject headers
-    default and destination rules), and the reserved-name categories and
-    prefixes with a pointer to the full list."""
+def test_readme_covers_pair_contract_and_reserved_names():
+    """Prove the README documents the sourced-env and pass-through policy
+    contract (no launcher grammar, runtime validation), the runtime
+    requirement, and the exact reserved-name set. Stale claims about
+    launcher-side grammars or version gates would teach users checks the
+    launcher no longer performs."""
     readme = _readme()
     lower = readme.lower()
-    # Value grammar: bytes, line forms, and no shell evaluation.
-    assert "printable ascii" in lower
-    assert "crlf" in lower
-    assert "tab" in lower
-    assert "comment" in lower
-    assert "never evaluated" in lower
-    assert "duplicate" in lower
-    assert "zero-length" in lower
-    assert "space-only" in lower
-    # Policy grammar: fields, injection default, destination rules.
-    assert "allow:" in readme
-    assert "inject:" in readme
-    assert "headers" in lower and "basic_auth" in readme and "query_params" in readme
-    assert "wildcard" in lower
-    assert "253" in readme
-    assert "dns" in lower
-    # Reserved names: categories, prefixes, representative exact names
-    # inside the reserved-names section, and the full-list pointer.
-    reserved_section = readme.split("### Reserved names", 1)[1]
-    for token in ("BASH", "TAU_ENTRYPOINT_", "TAU_SANDBOX_SECRET_SOURCE_"):
+    assert "sourced as shell" in lower
+    assert "native `--secret-conf` format" in lower
+    assert "passed to the runtime unmodified" in lower
+    assert "value: \"${OPENAI_API_KEY}\"" in readme
+    assert "run --secret-conf" in readme
+    assert "no version is checked" in lower
+    # No stale grammar/gate claims.
+    assert "printable ascii" not in lower
+    assert ">=0.6.12" not in readme
+    assert "plaintext fallback" not in lower
+    # Reserved names: the exact list and prefixes, in the reserved section.
+    reserved_section = readme.split("#### Reserved names", 1)[1]
+    for token in ("PATH", "HOME", "BASH_ENV", "LD_PRELOAD", "BASH", "TAU_"):
         assert token in reserved_section
-    assert "reserved" in lower
-    assert "PATH" in reserved_section and "HOME" in reserved_section
-    assert "docs/SPEC.md" in readme
 
 
-def test_readme_covers_gate_tls_network_reset_and_forwarding_precedence():
-    """Prove the README documents the present-pair-only runtime
-    compatibility gate with its exact range and version contract, the
-    TLS/allowlist/request-location boundary delegated to the runtime
-    contract, network independence of secret destinations, reset bypass,
-    and the suppression of same-name raw env-file forwarding."""
+def test_readme_covers_boundary_network_reset_and_forwarding_precedence():
+    """Prove the README documents the placeholder boundary delegated to
+    the runtime contract, network independence of secret destinations,
+    reset bypass, and the suppression of same-name raw env-file
+    forwarding."""
     readme = _readme()
     lower = readme.lower()
-    assert ">=0.6.12,<1.0.0" in readme
     assert "present pair" in lower
-    assert "no plaintext fallback" in lower
-    assert "msb MAJOR.MINOR.PATCH" in readme
     assert "tls" in lower
     assert "allowlist" in lower
     assert "request location" in lower
@@ -891,33 +858,33 @@ def test_readme_covers_gate_tls_network_reset_and_forwarding_precedence():
     assert "never grants network access" in lower
     assert "bypasses secret discovery" in lower
     assert "suppressed from raw forwarding" in lower
-    assert "raw forwarding" in lower
     assert "trusted" in lower
 
 
-def test_living_spec_contains_every_project_secret_requirement_and_scenario():
-    """Prove the living specification absorbed every requirement heading and
-    scenario from the approved project-secret design spec as current
-    behavior, that the MODIFIED Environment forwarding requirement replaced
-    the legacy text without a stale duplicate, and that sentinel existing
-    requirements survived the merge."""
-    design = (REPO_ROOT / "docs/design/2026-08-21-project-secret-injection-spec.md").read_text()
+def test_living_spec_contains_current_project_secret_requirements():
+    """Prove the living specification carries the simplified project-secret
+    requirements (paired sources, mapping, boundary, forwarding, reset,
+    documentation) and none of the removed defensive machinery."""
     spec = (REPO_ROOT / "docs/SPEC.md").read_text()
-    requirements = re.findall(r"^#### Requirement: (.+)$", design, re.M)
-    scenarios = re.findall(r"^##### Scenario: (.+)$", design, re.M)
-    assert len(requirements) == 12
-    assert len(scenarios) == 82
-    for name in requirements:
-        assert spec.count(f"### Requirement: {name}") == 1, name
-    for name in scenarios:
-        assert f"#### Scenario: {name}" in spec, name
-    # The modified requirement replaced the legacy single-purpose text.
-    assert spec.count("### Requirement: Environment forwarding") == 1
-    assert "except when the name is an active project secret" in spec
-    assert (
-        "SHALL be forwarded as `KEY=value` arguments. Values SHALL NOT be baked "
-        "into the image or printed by the launcher." not in spec
-    )
+    for name in (
+        "Paired secret sources",
+        "Exact secret location mapping",
+        "Protected secret boundary",
+        "Environment forwarding",
+        "Reset bypasses secret discovery",
+        "Project secret documentation",
+    ):
+        assert f"### Requirement: {name}" in spec, name
+    for removed in (
+        "Early source preflight",
+        "Host-only source isolation",
+        "Literal secret value grammar",
+        "Restricted secret policy grammar",
+        "Compatible secret runtime",
+        "Collision-free source references",
+        "Environment source isolation",
+    ):
+        assert f"### Requirement: {removed}" not in spec, removed
     # Sentinel pre-existing requirements are retained intact.
     for sentinel in (
         "Per-project persistent state",
