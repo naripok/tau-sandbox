@@ -61,6 +61,15 @@ else
     info "Image loaded."
 fi
 
+# --- Host login helper ---
+# The guest cannot open a browser or receive the OAuth redirect, so login
+# runs on the host via this helper and writes the credential into the
+# project's persistent volume. Link it next to the msb CLI.
+LOCAL_BIN="${HOME}/.local/bin"
+mkdir -p "$LOCAL_BIN"
+ln -sf "$SCRIPT_DIR/lib/tau-login-openai" "${LOCAL_BIN}/tau-login-openai"
+info "Installed tau-login-openai in ${LOCAL_BIN}."
+
 # --- Done ---
 
 echo ""

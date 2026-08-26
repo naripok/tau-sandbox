@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+"""Host-side OpenAI Codex login helper for a per-project sandbox credential.
+
+The guest cannot open a browser or receive the OAuth redirect, so this
+CLI runs the Codex authorization flow on the host and writes the result
+into the project's persistent home volume as ``/home/tau/.tau/
+credentials.json``, the exact document and path guest Tau reads. Each
+project gets its own volume and therefore its own token family. The
+OAuth flow is vendored from the fork's ``src/tau_coding/oauth.py`` so the
+host needs no Tau package installed; the only third-party import is
+``microsandbox``, used lazily for the volume write and hidden behind
+``_project_volume_fs`` so tests can stub it.
+
+Usage: tau-login-openai PROJECT_PATH
+
+Tokens never appear in output: progress goes to stdout, errors to
+stderr. Requires Python 3.10+.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import posixpath
+import re
+import secrets
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+OPENAI_CODEX_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
+OPENAI_CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
+OPENAI_CODEX_SCOPE = "openid profile email offline_access"
+OPENAI_CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth"
+OPENAI_CODEX_CALLBACK_HOST = "127.0.0.1"
+OPENAI_CODEX_CALLBACK_PORT = 1455
+OPENAI_CODEX_CALLBACK_PATH = "/auth/callback"
+OPENAI_CODEX_SUCCESS_MESSAGE = "OpenAI authentication completed. You can close this window."
+HTTP_TIMEOUT = 60
+
+CREDENTIAL_PROVIDER = "openai-codex"
+CREDENTIAL_PATH = "/home/tau/.tau/credentials.json"
+
+_UPPER_TO_LOWER = bytes.maketrans(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz"
+)
+_VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,233}$")
+
+
+class OAuthError(RuntimeError):
+    """Raised when the authorization flow cannot complete."""
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationFlow:
+    """OAuth authorization flow state."""
+
+    verifier: str
+    state: str
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationCode:
+    """Parsed paste input: an authorization code and optional state."""
+
+    code: str | None = None
+    state: str | None = None
+
+
+# --- Volume-name derivation (byte-identical port of run.sh) ---
+
+
+def sanitize_project_name(name: str) -> str:
+    """Map a basename to a safe msb volume name component.
+
+    Duplicates run.sh's sanitize_project_name byte-for-byte: ASCII
+    lowercase, every run of bytes outside [a-z0-9] collapsed to one
+    underscore, leading/trailing underscores stripped, truncation at 218
+    chars, and the "project" default. Names are bytes in bash, so
+    surrogateescape round-trips arbitrary host filenames exactly.
+    """
+    raw = name.encode("utf-8", "surrogateescape").translate(_UPPER_TO_LOWER)
+    out: list[int] = []
+    for byte in raw:
+        if 97 <= byte <= 122 or 48 <= byte <= 57:
+            out.append(byte)
+        elif out and out[-1] != 95:
+            out.append(95)
+    while out and out[0] == 95:
+        out.pop(0)
+    while out and out[-1] == 95:
+        out.pop()
+    out = out[:218]
+    while out and out[-1] == 95:
+        out.pop()
+    if not out:
+        return "project"
+    return bytes(out).decode("utf-8", "surrogateescape")
+
+
+def volume_name_for(project_path: str) -> str:
+    """Derive the project's persistent-home volume name exactly as run.sh.
+
+    realpath of the project path, basename (kept raw when it is a legal
+    volume name, sanitized otherwise), and the first 8 hex chars of the
+    SHA-256 of the realpath plus echo's trailing newline.
+    """
+    real = os.path.realpath(project_path)
+    basename = os.path.basename(real)
+    digest = hashlib.sha256((real + "\n").encode("utf-8", "surrogateescape")).hexdigest()[:8]
+    if not _VOLUME_NAME_RE.match(basename):
+        basename = sanitize_project_name(basename)
+    return f"tau-persist-{basename}-{digest}"
+
+
+# --- Vendored OpenAI Codex OAuth flow ---
+
+
+def create_pkce_pair() -> tuple[str, str]:
+    """Return a PKCE verifier and its S256 challenge."""
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return verifier, challenge
+
+
+def create_openai_codex_authorization_flow(*, originator: str = "tau") -> AuthorizationFlow:
+    """Create the authorization URL with the fork's client id, scope, and
+    params, plus a fresh PKCE pair and state."""
+    verifier, challenge = create_pkce_pair()
+    state = secrets.token_hex(16)
+    params = {
+        "response_type": "code",
+        "client_id": OPENAI_CODEX_CLIENT_ID,
+        "redirect_uri": OPENAI_CODEX_REDIRECT_URI,
+        "scope": OPENAI_CODEX_SCOPE,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "originator": originator,
+    }
+    return AuthorizationFlow(
+        verifier=verifier,
+        state=state,
+        url=f"{OPENAI_CODEX_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}",
+    )
+
+
+def parse_authorization_input(value: str) -> AuthorizationCode:
+    """Parse a pasted redirect URL, query string, code#state, or raw code."""
+    stripped = value.strip()
+    if not stripped:
+        return AuthorizationCode()
+
+    parsed = urllib.parse.urlparse(stripped)
+    if parsed.scheme and parsed.netloc:
+        params = urllib.parse.parse_qs(parsed.query)
+        return AuthorizationCode(
+            code=_first_query_value(params, "code"),
+            state=_first_query_value(params, "state"),
+        )
+
+    if "#" in stripped:
+        code, state = stripped.split("#", 1)
+        return AuthorizationCode(code=code or None, state=state or None)
+
+    if "code=" in stripped:
+        params = urllib.parse.parse_qs(stripped)
+        return AuthorizationCode(
+            code=_first_query_value(params, "code"),
+            state=_first_query_value(params, "state"),
+        )
+
+    return AuthorizationCode(code=stripped)
+
+
+def validate_state(state: str | None, expected_state: str) -> None:
+    """Reject a pasted state that differs from the flow's own state."""
+    if state is not None and state != expected_state:
+        raise OAuthError("OAuth state mismatch")
+
+
+def code_from_paste(text: str, expected_state: str) -> str:
+    """Parse pasted input, validate its state, and return the code."""
+    parsed = parse_authorization_input(text)
+    validate_state(parsed.state, expected_state)
+    if not parsed.code:
+        raise OAuthError("Missing authorization code")
+    return parsed.code
+
+
+def account_id_from_access_token(access_token: str) -> str | None:
+    """Extract the ChatGPT account id from an OpenAI Codex access JWT."""
+    payload = _access_token_payload(access_token)
+    if payload is None:
+        return None
+    auth = payload.get(OPENAI_CODEX_ACCOUNT_CLAIM)
+    if not isinstance(auth, dict):
+        return None
+    account_id = auth.get("chatgpt_account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        return None
+    return account_id.strip()
+
+
+def _access_token_payload(access_token: str) -> dict | None:
+    try:
+        parts = access_token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = json.loads(_base64url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _access_token_expiry(access_token: str) -> int | None:
+    payload = _access_token_payload(access_token)
+    if payload is None:
+        return None
+    exp = payload.get("exp")
+    if isinstance(exp, int | float) and not isinstance(exp, bool) and exp > 0:
+        return int(exp * 1000)
+    return None
+
+
+def exchange_openai_codex_authorization_code(
+    code: str, verifier: str
+) -> tuple[str, str, int]:
+    """Exchange the authorization code; return (access, refresh, expires_ms)."""
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": OPENAI_CODEX_CLIENT_ID,
+        "code": code,
+        "code_verifier": verifier,
+        "redirect_uri": OPENAI_CODEX_REDIRECT_URI,
+    }
+    raw = _post_token_form(form)
+    access = _required_token_field(raw, "access_token")
+    refresh = _required_token_field(raw, "refresh_token")
+    return access, refresh, _token_expiry(raw, access)
+
+
+def exchange_and_account(code: str, verifier: str) -> tuple[str, str, int, str]:
+    """Exchange the code and return (access, refresh, expires_ms, account_id)."""
+    access, refresh, expires = exchange_openai_codex_authorization_code(code, verifier)
+    account_id = account_id_from_access_token(access)
+    if account_id is None:
+        raise OAuthError("Failed to extract OpenAI account id from access token")
+    return access, refresh, expires, account_id
+
+
+def _post_token_form(form: dict[str, str]) -> dict:
+    """POST a URL-encoded form to the token endpoint and parse the JSON.
+
+    Error messages carry no response body: bodies of malformed responses
+    can contain token material, and output never carries tokens.
+    """
+    body = urllib.parse.urlencode(form).encode("ascii")
+    request = urllib.request.Request(OPENAI_CODEX_TOKEN_URL, data=body, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as error:
+        raise OAuthError(f"OpenAI Codex token exchange failed ({error.code})") from error
+    except urllib.error.URLError as error:
+        raise OAuthError(f"OpenAI Codex token exchange failed: {error.reason}") from error
+    try:
+        raw = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OAuthError("OpenAI Codex token response must be a JSON object") from error
+    if not isinstance(raw, dict):
+        raise OAuthError("OpenAI Codex token response must be a JSON object")
+    return raw
+
+
+def _required_token_field(raw: dict, field: str) -> str:
+    value = raw.get(field)
+    if not isinstance(value, str) or not value:
+        raise OAuthError(f"OpenAI Codex token response missing {field}")
+    return value
+
+
+def _token_expiry(raw: dict, access_token: str) -> int:
+    """Return the access-token expiry in epoch milliseconds."""
+    expires_in = raw.get("expires_in")
+    if isinstance(expires_in, int | float) and not isinstance(expires_in, bool):
+        return int(time.time() * 1000) + int(expires_in * 1000)
+    if expires_in is not None:
+        raise OAuthError("OpenAI Codex token response has invalid expires_in")
+    expires = _access_token_expiry(access_token)
+    if expires is not None:
+        return expires
+    raise OAuthError("OpenAI Codex token response missing expiry")
+
+
+def _first_query_value(params: dict[str, list[str]], key: str) -> str | None:
+    values = params.get(key)
+    if not values:
+        return None
+    return values[0] or None
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+# --- Local callback server ---
+
+
+class CallbackServer:
+    """Receives the OAuth redirect on localhost and records the code.
+
+    Binding happens in __init__, so a busy port raises OSError before any
+    thread starts; start_callback_server converts that into the paste path.
+    """
+
+    def __init__(self, expected_state: str) -> None:
+        self._code: str | None = None
+        self._code_event = threading.Event()
+        handler = _callback_handler_class(expected_state, self._record_code)
+        self._server = ThreadingHTTPServer(
+            (OPENAI_CODEX_CALLBACK_HOST, OPENAI_CODEX_CALLBACK_PORT), handler
+        )
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def _record_code(self, code: str) -> None:
+        self._code = code
+        self._code_event.set()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def wait_for_code(self) -> str:
+        """Block until the redirect arrives and return the code."""
+        self._code_event.wait()
+        if self._code is None:
+            raise OAuthError("Authorization callback did not provide a code")
+        return self._code
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=1)
+
+
+def start_callback_server(expected_state: str) -> CallbackServer | None:
+    """Bind the callback server; None when port 1455 is already occupied."""
+    try:
+        server = CallbackServer(expected_state)
+    except OSError:
+        return None
+    server.start()
+    return server
+
+
+def _callback_handler_class(expected_state: str, on_code) -> type:
+    """The HTTP handler for the fixed /auth/callback route."""
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            try:
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != OPENAI_CODEX_CALLBACK_PATH:
+                    self._finish(404, _oauth_html("Callback route not found."))
+                    return
+                params = urllib.parse.parse_qs(parsed.query)
+                if _first_query_value(params, "state") != expected_state:
+                    self._finish(400, _oauth_html("OAuth state mismatch."))
+                    return
+                code = _first_query_value(params, "code")
+                if not code:
+                    self._finish(400, _oauth_html("Missing authorization code."))
+                    return
+                self._finish(200, _oauth_html(OPENAI_CODEX_SUCCESS_MESSAGE))
+                on_code(code)
+            except Exception:
+                self._finish(500, _oauth_html("Internal error while processing OAuth callback."))
+
+        def log_message(self, _format, *_args):
+            """Keep callback requests out of the server's stderr logging."""
+
+        def _finish(self, status: int, body: str) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    return CallbackHandler
+
+
+def _oauth_html(message: str) -> str:
+    escaped = (
+        message.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+    return f'<!doctype html><meta charset="utf-8"><title>Tau OAuth</title><p>{escaped}</p>'
+
+
+def open_browser(url: str) -> bool:
+    """Open the authorization URL in the default browser; False when none is available."""
+    try:
+        return bool(webbrowser.open(url))
+    except webbrowser.Error:
+        return False
+
+
+# --- Credential document and volume write ---
+
+
+def credential_json(access: str, refresh: str, expires: int, account_id: str) -> str:
+    """Serialize the credential document exactly as guest Tau writes and reads it.
+
+    Mirrors FileCredentialStore._save: one "openai-codex" entry holding
+    type/access/refresh/expires/account_id, indent 2, sorted keys, and a
+    trailing newline. The flow's expires_ms value is written verbatim.
+    """
+    credential = {
+        "type": "oauth",
+        "access": access,
+        "refresh": refresh,
+        "expires": expires,
+        "account_id": account_id,
+    }
+    return json.dumps({CREDENTIAL_PROVIDER: credential}, indent=2, sort_keys=True) + "\n"
+
+
+def write_credential(volume_name: str, content: str) -> None:
+    """Write the credential document into the project volume.
+
+    Creates the volume through the SDK when absent and ensures the
+    /home/tau/.tau directory chain inside it.
+    """
+    fs = _project_volume_fs(volume_name)
+    _ensure_credential_parents(fs)
+    fs.write(CREDENTIAL_PATH, content.encode("utf-8"))
+
+
+def _project_volume_fs(volume_name: str):
+    """Return a writable VolumeFs for the named volume, creating it if missing."""
+    import asyncio
+
+    from microsandbox import Volume, VolumeNotFoundError
+
+    async def _open():
+        try:
+            handle = await Volume.get(volume_name)
+        except VolumeNotFoundError:
+            handle = await Volume.create(volume_name)
+        return handle.fs
+
+    return asyncio.run(_open())
+
+
+def _ensure_credential_parents(fs) -> None:
+    """Create the /home/tau/.tau directory chain inside the volume when missing."""
+    parts = posixpath.dirname(CREDENTIAL_PATH).strip("/").split("/")
+    current = ""
+    for part in parts:
+        current = f"{current}/{part}"
+        if not fs.exists(current):
+            fs.mkdir(current)
+
+
+# --- CLI ---
+
+
+def run_login(project_path: str) -> None:
+    """Run the full host authorization flow and write the project credential.
+
+    Browser path: open the authorization URL, wait for the localhost
+    callback, exchange, write. Paste path (no browser or occupied
+    port): print the URL and read a pasted redirect from stdin,
+    validating state before the exchange.
+    """
+    if not os.path.isdir(project_path):
+        raise OAuthError(f"Not a directory: {project_path}")
+    volume = volume_name_for(project_path)
+    flow = create_openai_codex_authorization_flow()
+    server = start_callback_server(flow.state)
+    try:
+        if server is not None and open_browser(flow.url):
+            print("Opening browser for OpenAI Codex authorization...", flush=True)
+            code = server.wait_for_code()
+        else:
+            print("Open this URL in a browser and approve login:", flush=True)
+            print(flow.url, flush=True)
+            print("Paste the redirect URL: ", end="", flush=True)
+            code = code_from_paste(sys.stdin.readline(), flow.state)
+        print("Exchanging authorization code...", flush=True)
+        access, refresh, expires, account_id = exchange_and_account(code, flow.verifier)
+        content = credential_json(access, refresh, expires, account_id)
+        write_credential(volume, content)
+    finally:
+        if server is not None:
+            server.close()
+    print(f"Login complete. Credential written to project volume {volume}.", flush=True)
+
+
+def main(argv: list[str]) -> int:
+    """CLI entry point: exit 0 on success, non-zero with a message on failure."""
+    if len(argv) != 2:
+        print(f"Usage: {argv[0]} PROJECT_PATH", file=sys.stderr)
+        return 2
+    try:
+        run_login(argv[1])
+    except OAuthError as error:
+        print(f"tau-login-openai: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        print(f"tau-login-openai: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
