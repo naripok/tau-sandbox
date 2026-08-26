@@ -97,17 +97,17 @@ When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be 
 - Host `sessions` and `logs` SHALL NOT be mounted.
 - Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
 - The isolated session and log volumes SHALL be mounted under `/var/lib/tau-sandbox/` and linked from their normal Tau paths.
-- When host `credentials.json` exists, it SHALL be mounted read-write at `/etc/tau-sandbox/shared/credentials.json` and linked from `/home/tau/.tau/credentials.json`.
+- Host `credentials.json` SHALL NOT be mounted or bootstrapped; the credential file SHALL live in the per-project home volume.
 - The host config directory itself SHALL NOT be mounted read-write.
 
-Microsandbox SHALL NOT receive nested mount targets under `/home/tau/.tau`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable Tau directory first and link the external credential, session, and log backing paths into it. A root-owned Tau directory left by the earlier nested-mount layout SHALL be moved aside automatically. Non-empty real session or log directories from that layout SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
+Microsandbox SHALL NOT receive nested mount targets under `/home/tau/.tau`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable Tau directory first and link the session and log backing paths into it. A root-owned Tau directory left by the earlier nested-mount layout SHALL be moved aside automatically. Non-empty real session or log directories from that layout SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
 
 On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<name>` with a writable copy of its mounted source. It SHALL track synchronized top-level names and remove a previously synchronized resource when that resource is removed from the host. Project-local entries that were never synchronized from the host SHALL remain persistent. This makes host settings, providers, catalogs, prompts, skills, themes, extensions, and other resources authoritative at startup while preserving host files. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
 
 #### Scenario: Fresh Tau home remains writable
 
 - GIVEN microsandbox is starting a new project with empty persistent volumes
-- WHEN it prepares credential, session, and log mounts before launching UID 1000
+- WHEN it prepares session and log mounts before launching UID 1000
 - THEN none of those mount targets SHALL create `/home/tau/.tau`
 - AND the entrypoint SHALL create a writable Tau directory and normal-path links
 
@@ -151,22 +151,68 @@ On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<
 
 ### Requirement: Writable shared credentials exception
 
-When host `credentials.json` exists, Tau SHALL be able to read and update that same host file so OAuth access and refresh token rotation remain valid outside the sandbox.
+The launcher SHALL NOT mount host `credentials.json`. A credential update in a guest SHALL leave the project credential file whole: a concurrent reader SHALL observe either the old or the new complete credential, never a partial file.
 
-Microsandbox file mounts cannot be replaced atomically. The installed Tau wrapper SHALL therefore switch `FileCredentialStore` to a flushed, in-place write only when `TAU_SANDBOX_SHARED_CREDENTIALS=1`; all other credential stores SHALL retain Tau's normal atomic writer.
+#### Scenario: Credential update stays whole for readers
 
-#### Scenario: Credential refresh reaches the host
+- GIVEN a sandbox with a project-local credential file
+- WHEN Tau updates a stored credential while another process reads the file
+- THEN the reader SHALL observe either the old or the new complete credential
+- AND it SHALL NOT observe a partial file
 
-- GIVEN host `credentials.json` is mounted
-- WHEN Tau updates a stored credential
-- THEN the host file SHALL contain the update
+### Requirement: Project-local credential storage
 
-#### Scenario: Missing host credentials stay project-local
+The launcher SHALL NOT mount host `credentials.json` into the guest. Each sandbox SHALL read and write a credential file inside its project persistent home volume. Two sandboxes for different projects SHALL NOT share a credential file. Credential creation and update SHALL occur only in the project volume, never on the host.
 
-- GIVEN `TAU_CONFIG_DIR` exists without `credentials.json`
-- WHEN Tau creates credentials
-- THEN they SHALL be written into the per-project home
+#### Scenario: Launch does not mount host credentials
+
+- GIVEN host `credentials.json` exists
+- WHEN the launcher starts a sandbox for a project
+- THEN the launcher SHALL NOT add a mount for the host credential file
+- AND the guest credential path SHALL resolve inside the project home volume
+
+#### Scenario: First-time credential stays in the project volume
+
+- GIVEN a project with no stored credential
+- WHEN a sandbox for that project creates a credential
+- THEN the credential SHALL be written inside the project home volume
 - AND the host config SHALL remain unchanged
+
+#### Scenario: Two projects are isolated
+
+- GIVEN sandboxes for two different projects
+- WHEN each sandbox stores a credential
+- THEN each credential SHALL persist only in its own project volume
+
+### Requirement: Host login helper produces a readable project credential
+
+A host-side helper SHALL run the OpenAI Codex authorization flow on the host and SHALL produce a credential that a sandbox for the chosen project can load unchanged. The helper SHALL place the credential inside the project home volume. The helper SHALL NOT publish a guest port and SHALL NOT require network access into the guest.
+
+#### Scenario: Browser login completes on the host
+
+- GIVEN a project and a host with a browser
+- WHEN the user runs the helper for the project
+- THEN the helper SHALL complete the Codex authorization flow against the host callback
+- AND the credential SHALL appear inside the project home volume
+- AND a sandbox for that project SHALL load the credential unchanged
+
+#### Scenario: Headless host falls back to paste
+
+- GIVEN a host with no browser, or a host whose callback port is occupied
+- WHEN the user runs the helper
+- THEN the helper SHALL print the authorization URL and accept a pasted redirect URL
+- AND a sandbox for that project SHALL load the resulting credential unchanged
+
+### Requirement: Concurrent refresh spends a rotating token once
+
+When two processes share one project credential file, a refresh SHALL spend a rotating refresh token at most once. No process SHALL receive a refresh-token-reused error from concurrent refresh of one shared file.
+
+#### Scenario: Concurrent refresh spends the token once
+
+- GIVEN two processes share one project credential file with an expired token
+- WHEN both processes begin a refresh before either refresh completes
+- THEN exactly one refresh request SHALL use the stored refresh token
+- AND the other process SHALL use the rotated credential written by the winner
 
 ### Requirement: Read-only `.agents` resources
 

@@ -12,8 +12,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/home/tau` | Read-write persistent per-project home for tools, shell state, and other files |
 | `/home/tau/.tau/*` | Writable per-project Tau config, refreshed from host config on every start when host-managed |
 | `/etc/tau-sandbox/bootstrap/tau/*` | Read-only, recursively dereferenced snapshots of host Tau config used for startup synchronization |
-| `/home/tau/.tau/credentials.json` | Link to the shared host credential mount when present; otherwise project-local |
-| `/etc/tau-sandbox/shared/credentials.json` | Sole writable host-config mount when shared |
+| `/home/tau/.tau/credentials.json` | Project-local credential file in the per-project home, read-write; the host credential is never mounted |
 | `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Links to read-write persistent per-project volumes; host history is not mounted |
 | `/var/lib/tau-sandbox/sessions/`, `/var/lib/tau-sandbox/logs/` | Backing mounts for Tau's session and log links |
 | `/home/tau/.tau/trust.json` | Read-write per-project trust state |
@@ -21,7 +20,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/tmp` | Read-write tmpfs, discarded after each run |
 | `/` | Ephemeral writable root overlay, discarded after each run |
 
-Host-managed Tau config is refreshed into the writable project home whenever the sandbox starts. Host changes, additions, and removals therefore appear on the next start; sandbox edits to host-managed resources last only for the current run. Config created only inside the sandbox remains persistent. `tau-sandbox --reset` deletes the per-project home, sessions, and logs. Shared credentials and host config remain untouched by reset.
+Host-managed Tau config is refreshed into the writable project home whenever the sandbox starts. Host changes, additions, and removals therefore appear on the next start; sandbox edits to host-managed resources last only for the current run. Config created only inside the sandbox remains persistent. `tau-sandbox --reset` deletes the per-project home, sessions, and logs, including the project credential. Host config remains untouched by reset.
 
 Host Tau config symlinks are dereferenced into temporary snapshots before mounting. Other projects, the rest of the host home, host SSH keys (unless copied through a Tau config link), unrelated dotfiles, host sockets, and paths outside the declared mounts are inaccessible.
 

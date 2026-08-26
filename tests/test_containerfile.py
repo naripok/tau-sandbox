@@ -92,3 +92,5 @@ def test_containerfile_copies_sandbox_config():
     assert "chown -R tau:tau /var/lib/tau-sandbox" in text
     assert "COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md" in text
     assert "COPY config/.bashrc /etc/tau-sandbox/.bashrc" in text
+    # Credentials are project-local; the shared host mount dir is gone.
+    assert "/etc/tau-sandbox/shared" not in text

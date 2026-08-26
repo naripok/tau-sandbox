@@ -12,7 +12,7 @@ set -euo pipefail
 #   /etc/tau-sandbox/bootstrap/tau/<resources>
 #                               host bootstrap sources (ro)
 #   /home/tau/.tau/credentials.json
-#                               link to shared host credential file (rw exception)
+#                               project-local credential file in the home volume (rw)
 #   /home/tau/.tau/sessions    link to isolated per-project volume (rw)
 #   /home/tau/.tau/logs        link to isolated per-project volume (rw)
 #   /home/tau/.tau/trust.json  isolated state in the home volume (rw)
@@ -87,29 +87,9 @@ link_volume_dir() {
 link_volume_dir /var/lib/tau-sandbox/sessions "$TAU_ENTRYPOINT_DIR/sessions"
 link_volume_dir /var/lib/tau-sandbox/logs "$TAU_ENTRYPOINT_DIR/logs"
 
-TAU_ENTRYPOINT_SHARED_CREDENTIALS=/etc/tau-sandbox/shared/credentials.json
-TAU_ENTRYPOINT_CREDENTIALS_LINK="$TAU_ENTRYPOINT_DIR/credentials.json"
-TAU_ENTRYPOINT_LOCAL_CREDENTIALS_BACKUP="$TAU_ENTRYPOINT_DIR/.sandbox-local-credentials.json"
-if [ "${TAU_SANDBOX_SHARED_CREDENTIALS:-0}" = "1" ]; then
-    if [ -L "$TAU_ENTRYPOINT_CREDENTIALS_LINK" ]; then
-        if [ "$(readlink "$TAU_ENTRYPOINT_CREDENTIALS_LINK")" != "$TAU_ENTRYPOINT_SHARED_CREDENTIALS" ]; then
-            echo "Error: $TAU_ENTRYPOINT_CREDENTIALS_LINK points to an unexpected location." >&2
-            exit 1
-        fi
-    else
-        if [ -s "$TAU_ENTRYPOINT_CREDENTIALS_LINK" ] && [ ! -e "$TAU_ENTRYPOINT_LOCAL_CREDENTIALS_BACKUP" ]; then
-            mv "$TAU_ENTRYPOINT_CREDENTIALS_LINK" "$TAU_ENTRYPOINT_LOCAL_CREDENTIALS_BACKUP"
-        else
-            rm -f "$TAU_ENTRYPOINT_CREDENTIALS_LINK"
-        fi
-        ln -s "$TAU_ENTRYPOINT_SHARED_CREDENTIALS" "$TAU_ENTRYPOINT_CREDENTIALS_LINK"
-    fi
-elif [ -L "$TAU_ENTRYPOINT_CREDENTIALS_LINK" ] && [ "$(readlink "$TAU_ENTRYPOINT_CREDENTIALS_LINK")" = "$TAU_ENTRYPOINT_SHARED_CREDENTIALS" ]; then
-    rm "$TAU_ENTRYPOINT_CREDENTIALS_LINK"
-    if [ -e "$TAU_ENTRYPOINT_LOCAL_CREDENTIALS_BACKUP" ]; then
-        mv "$TAU_ENTRYPOINT_LOCAL_CREDENTIALS_BACKUP" "$TAU_ENTRYPOINT_CREDENTIALS_LINK"
-    fi
-fi
+# Credentials stay project-local: the host file is never mounted, and the
+# entrypoint never touches credentials.json. Tau reads and writes it directly
+# in the persistent home volume with its stock atomic writer.
 
 # Refresh host-managed Tau config on every start. Sources are mounted at an
 # alternate read-only path, then copied into writable project-local paths so

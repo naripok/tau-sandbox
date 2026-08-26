@@ -707,10 +707,14 @@ def test_entrypoint_describes_isolated_config_layout():
     assert "/home/tau/.tau/logs" in text
     assert "/var/lib/tau-sandbox/sessions" in text
     assert "/var/lib/tau-sandbox/logs" in text
-    assert "/etc/tau-sandbox/shared/credentials.json" in text
     assert "/home/tau/.agents" in text
     assert "/tau-source" not in text
     assert "APPEND_SYSTEM.md" not in text
+    # Credentials are project-local: no shared mount path survives anywhere
+    # in the entrypoint, and no legacy backup-link machinery references it.
+    assert "/etc/tau-sandbox/shared" not in text
+    assert ".sandbox-local-credentials.json" not in text
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in text
 
 
 def test_entrypoint_sets_persistent_env():
@@ -941,12 +945,12 @@ def test_readme_covers_pair_contract_and_reserved_names():
     launcher no longer performs."""
     readme = _readme()
     lower = readme.lower()
-    assert "sourced as shell" in lower
+    assert "sources `secrets.env` as shell" in lower
     assert "native `--secret-conf` format" in lower
-    assert "passed to the runtime unmodified" in lower
+    assert "passes the file to the runtime unmodified" in lower
     assert "value: \"${OPENAI_API_KEY}\"" in readme
     assert "run --secret-conf" in readme
-    assert "no version is checked" in lower
+    assert "does not detect the runtime version" in lower
     # No stale grammar/gate claims.
     assert "printable ascii" not in lower
     assert ">=0.6.12" not in readme
@@ -1006,6 +1010,57 @@ def test_living_spec_contains_current_project_secret_requirements():
         "Image build and load",
     ):
         assert f"### Requirement: {sentinel}" in spec
+
+
+def test_living_spec_contains_current_credential_requirements():
+    """Prove the living specification carries the per-project credential
+    requirements and none of the removed shared-mount or in-place-writer
+    machinery."""
+    spec = (REPO_ROOT / "docs/SPEC.md").read_text()
+    for name in (
+        "Project-local credential storage",
+        "Host login helper produces a readable project credential",
+        "Concurrent refresh spends a rotating token once",
+        "Writable shared credentials exception",
+    ):
+        assert f"### Requirement: {name}" in spec, name
+    # The old wrapper patch and shared-mount machinery is gone.
+    assert "switch `FileCredentialStore`" not in spec
+    assert "/etc/tau-sandbox/shared/credentials.json" not in spec
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in spec
+    assert "in-place write" not in spec
+
+
+def test_readme_describes_project_local_credentials_and_login_helper():
+    """Prove the README documents the per-project credential model: no
+    shared host mount, the in-volume credential file, and the host login
+    helper with its browser and paste flows."""
+    readme = _readme()
+    lower = readme.lower()
+    assert "tau-login-openai" in readme
+    assert "project-local" in lower
+    assert "never mounted" in lower
+    assert "browser" in lower
+    assert "paste" in lower or "pasted" in lower
+    # Removed shared-credential behavior is gone from the README.
+    for removed in (
+        "/etc/tau-sandbox/shared/credentials.json",
+        "TAU_SANDBOX_SHARED_CREDENTIALS",
+        "in-place",
+        "sole write exception",
+    ):
+        assert removed not in readme
+
+
+def test_append_system_doc_describes_project_local_credentials():
+    """Prove the sandbox environment reference describes the project-local
+    credential file and never the shared host credential mount."""
+    text = _read("APPEND_SYSTEM.md")
+    assert "/home/tau/.tau/credentials.json" in text
+    assert "project" in text.lower()
+    assert "/etc/tau-sandbox/shared" not in text
+    assert "shared host credential" not in text
+    assert "Shared credentials" not in text
 
 
 def test_scripts_pass_syntax_checks():

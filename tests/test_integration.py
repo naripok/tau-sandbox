@@ -3,7 +3,7 @@
 These tests exercise the full launch path (run.sh -> msb run -> boot ->
 entrypoint -> command) and prove the sandbox contract: workspace binding,
 isolated persistent state, ephemeral filesystems, bootstrapped host config,
-the credential write exception, unprivileged execution, environment forwarding,
+project-local credentials, unprivileged execution, environment forwarding,
 and volume isolation between projects.
 
 The test image is built and loaded once per session by the loaded_image
@@ -229,41 +229,55 @@ class TestPersistence:
 
 @pytest.mark.usefixtures("loaded_image", "volume_cleanup")
 class TestHostConfigIsolation:
-    """Host config seeds writable project state; credentials remain shared."""
+    """Host config seeds writable project state; credentials stay project-local."""
 
-    def test_login_tokens_are_available_to_the_agent(self, tmp_path, sandbox_home):
+    def test_project_credentials_live_in_the_home_volume(self, tmp_path, sandbox_home):
+        """Host credentials.json never seeds the guest, and a project-local
+        credential written inside the sandbox persists in the home volume
+        across runs while the host file stays untouched."""
         tau_host = sandbox_home / ".tau-host"
         tau_host.mkdir()
-        (tau_host / "credentials.json").write_text(
-            '{"openrouter": "sk-fake-token"}\n'
-        )
+        host_credentials = tau_host / "credentials.json"
+        host_credentials.write_text('{"openrouter": "sk-host-token"}\n')
         result = run_sandbox(
             tmp_path,
             sandbox_home,
             [
                 "sh",
                 "-c",
-                "test -L /home/tau/.tau/credentials.json && "
-                "cat /home/tau/.tau/credentials.json",
+                "test ! -e /home/tau/.tau/credentials.json && "
+                "mkdir -p /home/tau/.tau && "
+                "printf '%s\\n' '{\"openrouter\": \"sk-project-token\"}' > "
+                "/home/tau/.tau/credentials.json",
             ],
         )
-        assert result.returncode == 0
-        assert "sk-fake-token" in result.stdout
+        assert result.returncode == 0, result.stderr
+        assert host_credentials.read_text() == '{"openrouter": "sk-host-token"}\n'
+        result = run_sandbox(
+            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/credentials.json"]
+        )
+        assert result.returncode == 0, result.stderr
+        assert "sk-project-token" in result.stdout
 
-    def test_tau_wrapper_updates_shared_credentials_in_place(self, tmp_path, sandbox_home):
+    def test_tau_writes_credentials_into_the_project_volume(self, tmp_path, sandbox_home):
+        """Tau's stock credential writer updates the project-local file in the
+        persistent home volume; the host credential file is never written."""
         tau_host = sandbox_home / ".tau-host"
         tau_host.mkdir()
-        credentials = tau_host / "credentials.json"
-        credentials.write_text('{"openrouter": "old-token"}\n')
+        host_credentials = tau_host / "credentials.json"
+        host_credentials.write_text('{"openrouter": "host-token"}\n')
         script = (
-            "import runpy; "
-            "runpy.run_path('/usr/local/bin/tau', run_name='tau_wrapper_test'); "
             "from tau_coding.credentials import FileCredentialStore; "
             "FileCredentialStore().set('openrouter', 'new-token')"
         )
         result = run_sandbox(tmp_path, sandbox_home, ["python", "-c", script])
         assert result.returncode == 0, result.stderr
-        assert "new-token" in credentials.read_text()
+        assert host_credentials.read_text() == '{"openrouter": "host-token"}\n'
+        result = run_sandbox(
+            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/credentials.json"]
+        )
+        assert result.returncode == 0, result.stderr
+        assert "new-token" in result.stdout
 
     def test_host_resources_refresh_each_start_and_are_writable(self, tmp_path, sandbox_home):
         tau_host = sandbox_home / ".tau-host"
