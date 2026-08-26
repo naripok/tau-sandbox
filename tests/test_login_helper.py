@@ -59,25 +59,34 @@ def _jwt(payload=None):
 
 
 class RecordingFs:
-    """A VolumeFs stand-in recording writes and reporting existing paths."""
+    """An async VolumeFs stand-in recording writes and reporting existing paths.
+
+    Every method is a coroutine exactly like the real SDK, so a sync call
+    returns an un-awaited coroutine and records nothing; assertions on
+    recorded writes then fail if the helper forgets an await.
+    """
 
     def __init__(self, written, volume, seed=None):
         self.written = written
         self.volume = volume
         self._store = dict(seed or {})
 
-    def exists(self, path):
+    async def exists(self, path):
         return True
 
-    def read(self, path):
+    async def read(self, path):
         return self._store.get(path, b"{}")
 
-    def mkdir(self, path):
+    async def mkdir(self, path):
         raise AssertionError(f"mkdir on existing dirs-only fake: {path}")
 
-    def write(self, path, data):
+    async def write(self, path, data):
         self.written.append((path, data))
         self._store[path] = data
+
+    def stored(self, path):
+        """Return the stored bytes for a path, mirroring a completed write."""
+        return self._store.get(path)
 
 
 @pytest.fixture
@@ -216,13 +225,13 @@ def test_write_step_creates_missing_volume_then_writes(helper, monkeypatch, tmp_
         pass
 
     class FakeFs:
-        def exists(self, path):
+        async def exists(self, path):
             return False
 
-        def mkdir(self, path):
+        async def mkdir(self, path):
             made_dirs.append(path)
 
-        def write(self, path, data):
+        async def write(self, path, data):
             written.append((path, data))
 
     class FakeVolume:
@@ -274,6 +283,39 @@ def test_write_step_reuses_existing_volume(helper, monkeypatch, tmp_path):
     helper.write_credential(volume, content)
 
     assert written == [("/home/tau/.tau/credentials.json", content.encode("utf-8"))]
+
+
+def test_write_completes_before_write_credential_returns(helper, monkeypatch, tmp_path):
+    """The final fs.write is awaited: the credential is present in the
+    fake volume store once write_credential returns instead of being
+    dropped as an un-awaited coroutine."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    written = []
+    fs = RecordingFs(written, volume)
+
+    class FakeVolume:
+        @staticmethod
+        async def get(name):
+            return SimpleNamespace(fs=fs)
+
+        @staticmethod
+        async def create(name, **kwargs):
+            raise AssertionError("existing volume must not be created")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "microsandbox",
+        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
+    )
+    content = helper.credential_json(
+        "access-token", "refresh-token", 1_758_908_400_123, "acct_1"
+    )
+    helper.write_credential(volume, content)
+
+    assert written == [("/home/tau/.tau/credentials.json", content.encode("utf-8"))]
+    assert fs.stored("/home/tau/.tau/credentials.json") == content.encode("utf-8")
 
 
 def test_volume_name_regex_requires_true_end_of_name(helper):
@@ -352,17 +394,17 @@ def test_write_without_existing_file_produces_single_entry_document(helper, monk
     reads = []
 
     class FakeFs:
-        def exists(self, path):
+        async def exists(self, path):
             return False
 
-        def mkdir(self, path):
+        async def mkdir(self, path):
             pass
 
-        def read(self, path):
+        async def read(self, path):
             reads.append(path)
             raise AssertionError("read must not be called for a missing file")
 
-        def write(self, path, data):
+        async def write(self, path, data):
             written.append((path, data))
 
     class FakeVolume:
@@ -399,13 +441,13 @@ def test_write_corrupt_credentials_file_fails_without_writing(helper, monkeypatc
         written = []
 
         class FakeFs:
-            def exists(self, path):
+            async def exists(self, path):
                 return True
 
-            def read(self, path):
+            async def read(self, path):
                 return corrupt
 
-            def write(self, path, data):
+            async def write(self, path, data):
                 written.append((path, data))
 
         class FakeVolume:
@@ -442,7 +484,10 @@ def _stub_login(helper, monkeypatch, tmp_path, written, server):
         "exchange_openai_codex_authorization_code",
         lambda code, verifier: (_jwt(), "refresh-token-xyz", 1_758_908_400_123),
     )
-    monkeypatch.setattr(helper, "_project_volume_fs", lambda name: RecordingFs(written, name))
+    async def fake_volume_fs(name):
+        return RecordingFs(written, name)
+
+    monkeypatch.setattr(helper, "_project_volume_fs", fake_volume_fs)
     return project, flow
 
 
