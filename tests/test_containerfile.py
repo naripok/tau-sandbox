@@ -56,7 +56,7 @@ def test_containerfile_pins_tau_ref():
 
 def test_containerfile_pins_tau_ref_with_refresh_lock():
     # The pinned commit carries the cross-process OAuth refresh lock.
-    assert "ARG TAU_REF=af78d692246f0e814838628a23b1491313985953" in _text()
+    assert "ARG TAU_REF=b27e813004ec92b555dfafb1bf7cc2d77a7453bf" in _text()
 
 
 def test_containerfile_has_launchers():
