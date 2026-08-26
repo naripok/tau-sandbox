@@ -54,7 +54,7 @@ CREDENTIAL_PATH = "/home/tau/.tau/credentials.json"
 _UPPER_TO_LOWER = bytes.maketrans(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz"
 )
-_VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,233}$")
+_VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,233}\Z")
 
 
 class OAuthError(RuntimeError):
@@ -448,11 +448,45 @@ def write_credential(volume_name: str, content: str) -> None:
     """Write the credential document into the project volume.
 
     Creates the volume through the SDK when absent and ensures the
-    /home/tau/.tau directory chain inside it.
+    /home/tau/.tau directory chain inside it. The write is a
+    read-merge-write: the stored file keeps every entry that is not
+    "openai-codex", a missing file starts from the new document, and a
+    stored file that is not a JSON object fails without writing. The
+    VolumeFs API exposes no chmod or write mode, so file permissions
+    inside the volume are governed by the SDK/host volume store.
     """
     fs = _project_volume_fs(volume_name)
     _ensure_credential_parents(fs)
-    fs.write(CREDENTIAL_PATH, content.encode("utf-8"))
+    merged = _merge_credential_document(fs, content)
+    fs.write(CREDENTIAL_PATH, merged.encode("utf-8"))
+
+
+def _merge_credential_document(fs, new_document: str) -> str:
+    """Merge a serialized credential document into the stored file.
+
+    Returns the merged document serialized exactly as the fork's
+    FileCredentialStore._save: indent 2, sorted keys, trailing newline.
+    Raises OAuthError when the stored file is not a JSON object so a
+    corrupt file is never overwritten.
+    """
+    if not fs.exists(CREDENTIAL_PATH):
+        return new_document
+    raw = fs.read(CREDENTIAL_PATH)
+    stored_text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    try:
+        stored = json.loads(stored_text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OAuthError(
+            f"{CREDENTIAL_PATH} in the project volume is corrupt; "
+            "refusing to overwrite"
+        ) from error
+    if not isinstance(stored, dict):
+        raise OAuthError(
+            f"{CREDENTIAL_PATH} in the project volume is not a JSON object; "
+            "refusing to overwrite"
+        )
+    stored[CREDENTIAL_PROVIDER] = json.loads(new_document)[CREDENTIAL_PROVIDER]
+    return json.dumps(stored, indent=2, sort_keys=True) + "\n"
 
 
 def _project_volume_fs(volume_name: str):
@@ -523,9 +557,6 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         run_login(argv[1])
-    except OAuthError as error:
-        print(f"tau-login-openai: {error}", file=sys.stderr)
-        return 1
     except Exception as error:
         print(f"tau-login-openai: {error}", file=sys.stderr)
         return 1

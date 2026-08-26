@@ -22,30 +22,26 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 HELPER = REPO_ROOT / "lib" / "tau-login-openai"
 
-# The project-name derivation copied verbatim from run.sh (the
-# sanitize_project_name function, the hash rule, the volume-name legality
-# check, and the tau-persist- prefix), so drift between the helper and the
-# launcher shows up as a failing comparison.
-RUN_SH_DERIVATION = """\
-sanitize_project_name() {
-    local out
-    out="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cs 'a-z0-9' '_')"
-    out="${out#_}"
-    out="${out%_}"
-    out="${out:0:218}"
-    out="${out%_}"
-    [ -n "$out" ] || out="project"
-    printf '%s' "$out"
-}
-PROJECT_PATH="$(realpath "$1")"
-PROJECT_NAME="$(basename "$PROJECT_PATH")"
-PROJECT_HASH="$(echo "$PROJECT_PATH" | sha256sum | cut -c1-8)"
-VOLUME_NAME_RE='^[A-Za-z0-9._-]{1,233}$'
-if [[ ! "$PROJECT_NAME" =~ $VOLUME_NAME_RE ]]; then
-    PROJECT_NAME="$(sanitize_project_name "$PROJECT_NAME")"
-fi
-printf 'tau-persist-%s-%s' "$PROJECT_NAME" "$PROJECT_HASH"
-"""
+def _run_sh_derivation_script() -> str:
+    """Assemble a bash snippet from run.sh's own volume-derivation lines.
+
+    Copies run.sh text verbatim from the PROJECT_PATH assignment through
+    the PERSIST_VOLUME assignment and then prints PERSIST_VOLUME, so the
+    comparison runs the real run.sh derivation. If run.sh drifts, the
+    markers or the comparison fail loudly at test time.
+    """
+    text = (REPO_ROOT / "run.sh").read_text(encoding="utf-8")
+    start_marker = 'PROJECT_PATH="$(realpath "$(pwd)")' + '"'
+    end_marker = 'PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-${PROJECT_HASH}"'
+    try:
+        start = text.index(start_marker)
+        end = text.index("\n", text.index(end_marker)) + 1
+    except ValueError as error:
+        raise AssertionError(
+            "run.sh no longer contains the volume-derivation fragment "
+            f"({error}); update the extraction markers in this test"
+        ) from error
+    return text[start:end] + "\nprintf '%s' \"$PERSIST_VOLUME\"\n"
 
 ACCESS_JWT_PAYLOAD = {
     "exp": 1893456000,
@@ -63,20 +59,25 @@ def _jwt(payload=None):
 
 
 class RecordingFs:
-    """A VolumeFs stand-in recording writes and reporting existing dirs."""
+    """A VolumeFs stand-in recording writes and reporting existing paths."""
 
-    def __init__(self, written, volume):
+    def __init__(self, written, volume, seed=None):
         self.written = written
         self.volume = volume
+        self._store = dict(seed or {})
 
     def exists(self, path):
         return True
+
+    def read(self, path):
+        return self._store.get(path, b"{}")
 
     def mkdir(self, path):
         raise AssertionError(f"mkdir on existing dirs-only fake: {path}")
 
     def write(self, path, data):
         self.written.append((path, data))
+        self._store[path] = data
 
 
 @pytest.fixture
@@ -100,6 +101,7 @@ def helper():
 def test_volume_names_match_run_sh_derivation(tmp_path, helper):
     """The helper derives the identical volume name run.sh derives, for
     plain legal names and names that need sanitization."""
+    script = _run_sh_derivation_script()
     projects = [
         tmp_path / "plain-project",
         tmp_path / "dotted.project-name_v2",
@@ -110,7 +112,8 @@ def test_volume_names_match_run_sh_derivation(tmp_path, helper):
     for project in projects:
         project.mkdir()
         result = subprocess.run(
-            ["bash", "-c", RUN_SH_DERIVATION, "derive", str(project)],
+            ["bash", "-c", script, "derive"],
+            cwd=project,
             capture_output=True,
             text=True,
         )
@@ -267,9 +270,161 @@ def test_write_step_reuses_existing_volume(helper, monkeypatch, tmp_path):
         "microsandbox",
         SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
     )
-    helper.write_credential(volume, "{}\n")
+    content = helper.credential_json("access-token", "refresh-token", 1_758_908_400_123, "acct_1")
+    helper.write_credential(volume, content)
 
-    assert written == [("/home/tau/.tau/credentials.json", b"{}\n")]
+    assert written == [("/home/tau/.tau/credentials.json", content.encode("utf-8"))]
+
+
+def test_volume_name_regex_requires_true_end_of_name(helper):
+    """The legality regex anchors at the true end of the name: Python's
+    $ matches before a trailing newline, bash's =~ does not, so the
+    helper uses \\Z to stay in agreement with run.sh."""
+    assert helper._VOLUME_NAME_RE.match("plain-name") is not None
+    assert helper._VOLUME_NAME_RE.match("plain-name\n") is None
+
+
+def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
+    """A stored document keeps every non-openai-codex entry; the
+    openai-codex entry is replaced and the merged document is serialized
+    byte-identically to the fork's FileCredentialStore._save."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    written = []
+    stored = {
+        "anthropic-key": "sk-ant-42",
+        "openai-codex": {
+            "type": "oauth",
+            "access": "old-access",
+            "refresh": "old-refresh",
+            "expires": 1,
+            "account_id": "old-acct",
+        },
+    }
+
+    class FakeVolume:
+        @staticmethod
+        async def get(name):
+            seed = {"/home/tau/.tau/credentials.json": json.dumps(stored).encode("utf-8")}
+            fs = RecordingFs(written, volume, seed=seed)
+            return SimpleNamespace(fs=fs)
+
+        @staticmethod
+        async def create(name, **kwargs):
+            raise AssertionError("existing volume must not be created")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "microsandbox",
+        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
+    )
+    helper.write_credential(
+        volume, helper.credential_json("new-access", "new-refresh", 2, "new-acct")
+    )
+
+    assert written == [
+        (
+            "/home/tau/.tau/credentials.json",
+            (
+                "{\n"
+                '  "anthropic-key": "sk-ant-42",\n'
+                '  "openai-codex": {\n'
+                '    "access": "new-access",\n'
+                '    "account_id": "new-acct",\n'
+                '    "expires": 2,\n'
+                '    "refresh": "new-refresh",\n'
+                '    "type": "oauth"\n'
+                "  }\n"
+                "}\n"
+            ).encode("utf-8"),
+        )
+    ]
+
+
+def test_write_without_existing_file_produces_single_entry_document(helper, monkeypatch, tmp_path):
+    """A missing credentials.json yields exactly the new single-entry
+    document; no read happens and no other entry appears."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    written = []
+    reads = []
+
+    class FakeFs:
+        def exists(self, path):
+            return False
+
+        def mkdir(self, path):
+            pass
+
+        def read(self, path):
+            reads.append(path)
+            raise AssertionError("read must not be called for a missing file")
+
+        def write(self, path, data):
+            written.append((path, data))
+
+    class FakeVolume:
+        @staticmethod
+        async def get(name):
+            return SimpleNamespace(fs=FakeFs())
+
+        @staticmethod
+        async def create(name, **kwargs):
+            raise AssertionError("existing volume must not be created")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "microsandbox",
+        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
+    )
+    new_doc = helper.credential_json("new-access", "new-refresh", 1_758_908_400_123, "new-acct")
+    helper.write_credential(volume, new_doc)
+
+    assert reads == []
+    assert written == [("/home/tau/.tau/credentials.json", new_doc.encode("utf-8"))]
+    assert set(json.loads(written[0][1])) == {"openai-codex"}
+
+
+def test_write_corrupt_credentials_file_fails_without_writing(helper, monkeypatch, tmp_path):
+    """A stored document that is not a JSON object raises a clear error
+    and writes nothing, so a corrupt file is never destroyed."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    new_doc = helper.credential_json("new-access", "new-refresh", 2, "new-acct")
+
+    for corrupt in (b"{not json", b"[1, 2, 3]"):
+        written = []
+
+        class FakeFs:
+            def exists(self, path):
+                return True
+
+            def read(self, path):
+                return corrupt
+
+            def write(self, path, data):
+                written.append((path, data))
+
+        class FakeVolume:
+            @staticmethod
+            async def get(name):
+                return SimpleNamespace(fs=FakeFs())
+
+            @staticmethod
+            async def create(name, **kwargs):
+                raise AssertionError("existing volume must not be created")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "microsandbox",
+            SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
+        )
+        with pytest.raises(helper.OAuthError, match="refusing to overwrite"):
+            helper.write_credential(volume, new_doc)
+        assert written == []
 
 
 # --- End-to-end output never contains tokens ---
