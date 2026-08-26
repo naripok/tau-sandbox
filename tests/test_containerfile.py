@@ -54,6 +54,11 @@ def test_containerfile_pins_tau_ref():
     assert "ARG TAU_REF=" in _text()
 
 
+def test_containerfile_pins_tau_ref_with_refresh_lock():
+    # The pinned commit carries the cross-process OAuth refresh lock.
+    assert "ARG TAU_REF=af78d692246f0e814838628a23b1491313985953" in _text()
+
+
 def test_containerfile_has_launchers():
     text = _text()
     assert "COPY config/entrypoint.sh" in text
