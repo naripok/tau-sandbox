@@ -18,6 +18,9 @@ set -euo pipefail
 #   /home/tau/.tau/trust.json  isolated state in the home volume (rw)
 #   /home/tau/.agents          host ~/.agents (ro, when present)
 #
+# A credentials.json symlink left by the old shared-credential layout is
+# removed at startup. The project starts clean with a real local file.
+#
 # The microVM rootfs uses a disposable writable overlay and is discarded after
 # every run. Durable state lives in /workspace, /home/tau, or the persistent
 # session and log mounts linked from the home.
@@ -88,8 +91,19 @@ link_volume_dir /var/lib/tau-sandbox/sessions "$TAU_ENTRYPOINT_DIR/sessions"
 link_volume_dir /var/lib/tau-sandbox/logs "$TAU_ENTRYPOINT_DIR/logs"
 
 # Credentials stay project-local: the host file is never mounted, and the
-# entrypoint never touches credentials.json. Tau reads and writes it directly
-# in the persistent home volume with its stock atomic writer.
+# entrypoint never writes credentials.json; Tau owns the file with its stock
+# atomic writer. The cleanup below only removes a stale legacy symlink.
+TAU_ENTRYPOINT_CREDENTIALS="$TAU_ENTRYPOINT_DIR/credentials.json"
+if [ -L "$TAU_ENTRYPOINT_CREDENTIALS" ]; then
+    # Projects from the old shared-credential layout keep a symlink to the
+    # removed shared mount; a project that never logged in keeps a dangling
+    # link. Remove exactly those two stale spellings so the project starts
+    # with a real local file; a regular file or an existing symlink target
+    # stays untouched.
+    if [ "$(readlink "$TAU_ENTRYPOINT_CREDENTIALS")" = "/etc/tau-sandbox/shared/credentials.json" ] || [ ! -e "$TAU_ENTRYPOINT_CREDENTIALS" ]; then
+        rm -f -- "$TAU_ENTRYPOINT_CREDENTIALS"
+    fi
+fi
 
 # Refresh host-managed Tau config on every start. Sources are mounted at an
 # alternate read-only path, then copied into writable project-local paths so

@@ -681,6 +681,86 @@ def test_entrypoint_manifest_prune_ignores_unterminated_final_record(tmp_path):
     assert (taudir / "stray.txt").exists()
 
 
+_LEGACY_SHARED_CREDENTIALS = "/etc/tau-sandbox/shared/credentials.json"
+
+
+def _credentials_cleanup_block(text: str) -> str:
+    """Extract the stale credentials-symlink cleanup if-block from the
+    entrypoint: the symlink guard plus its inner stale-condition branch,
+    balanced to the matching outer fi."""
+    lines = text.splitlines()
+    start = next(
+        i
+        for i, line in enumerate(lines)
+        if 'if [ -L "$TAU_ENTRYPOINT_CREDENTIALS" ]; then' in line
+    )
+    depth = 0
+    for i in range(start, len(lines)):
+        if lines[i].startswith(("if ", "if[")):
+            depth += 1
+        elif lines[i].rstrip() == "fi":
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start : i + 1]) + "\n"
+    raise AssertionError("unbalanced credentials cleanup block")
+
+
+def _run_credentials_cleanup(tmp_path: pathlib.Path, mode: str) -> pathlib.Path:
+    """Run the entrypoint credentials cleanup block against a fake home
+    volume seeded with one of the documented credentials.json spellings."""
+    taudir = tmp_path / "taudir"
+    taudir.mkdir()
+    credentials = taudir / "credentials.json"
+    if mode == "shared-symlink":
+        credentials.symlink_to(_LEGACY_SHARED_CREDENTIALS)
+    elif mode == "dangling-symlink":
+        credentials.symlink_to(str(tmp_path / "gone.json"))
+    elif mode == "regular-file":
+        credentials.write_text('{"openrouter": "sk-project-token"}\n')
+    elif mode == "valid-symlink":
+        (taudir / "real.json").write_text('{"openrouter": "sk-project-token"}\n')
+        credentials.symlink_to("real.json")
+    else:
+        raise AssertionError(f"unknown mode: {mode}")
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"TAU_ENTRYPOINT_CREDENTIALS={shlex.quote(str(credentials))}",
+            _credentials_cleanup_block(_read("entrypoint.sh")),
+        ]
+    )
+    subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
+    return taudir
+
+
+@pytest.mark.parametrize(
+    ("mode", "survives"),
+    [
+        ("shared-symlink", False),
+        ("dangling-symlink", False),
+        ("regular-file", True),
+        ("valid-symlink", True),
+    ],
+)
+def test_entrypoint_removes_stale_credentials_symlink(tmp_path, mode, survives):
+    """Prove the startup cleanup removes exactly the stale credentials
+    symlinks: a link to the removed shared path and any dangling link are
+    removed, while a regular project-local file and a valid symlink inside
+    the volume survive untouched."""
+    taudir = _run_credentials_cleanup(tmp_path, mode)
+    credentials = taudir / "credentials.json"
+    assert credentials.exists() == survives
+    if not survives:
+        assert not credentials.is_symlink()  # path is gone, not left dangling
+    if mode == "regular-file":
+        assert credentials.read_text(encoding="utf-8") == (
+            '{"openrouter": "sk-project-token"}\n'
+        )
+    if mode == "valid-symlink":
+        assert credentials.is_symlink()
+        assert credentials.readlink() == pathlib.Path("real.json")
+
+
 def test_entrypoint_has_required_directives():
     text = _read("entrypoint.sh")
     assert "set -euo pipefail" in text
@@ -710,9 +790,10 @@ def test_entrypoint_describes_isolated_config_layout():
     assert "/home/tau/.agents" in text
     assert "/tau-source" not in text
     assert "APPEND_SYSTEM.md" not in text
-    # Credentials are project-local: no shared mount path survives anywhere
-    # in the entrypoint, and no legacy backup-link machinery references it.
-    assert "/etc/tau-sandbox/shared" not in text
+    # Credentials are project-local: the legacy shared path appears exactly
+    # once, as the stale-symlink cleanup target, and no legacy backup-link
+    # or shared-export machinery references it.
+    assert text.count("/etc/tau-sandbox/shared") == 1
     assert ".sandbox-local-credentials.json" not in text
     assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in text
 
