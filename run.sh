@@ -8,8 +8,8 @@ set -euo pipefail
 # --- Configuration (host side) ---
 # TAU_IMAGE: full image reference passed to msb (bypasses .tau-packages).
 # TAU_CONFIG_DIR: host resources exposed read-only for startup synchronization
-# sources, except for the writable credentials file. TAU_AGENTS_DIR remains
-# read-only at its normal sandbox-home path.
+# sources; credentials stay per-project and are never mounted. TAU_AGENTS_DIR
+# remains read-only at its normal sandbox-home path.
 # TAU_ENV_FILE: env file whose variables are forwarded into the VM.
 IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
 # Project-local config discovery: when TAU_CONFIG_DIR is unset, the nearest
@@ -356,12 +356,12 @@ fi
 # host ~/.tau are copied into a temporary snapshot with symlinks recursively
 # dereferenced, then mounted individually read-only under the bootstrap
 # directory. The entrypoint refreshes them in the persistent home on every
-# start, where Tau can use
-# atomic replacement without modifying the host defaults. credentials.json is
-# the sole host write exception. Sessions, logs, and trust state stay
-# per-project; the Tau wrapper makes OAuth writes safe for a mounted credential
-# file. Session, log, and credential mounts use backing paths outside the home
-# so microsandbox's root-owned mountpoint setup cannot create an unwritable
+# start, where Tau can use atomic replacement without modifying the host
+# defaults. credentials.json is never mounted: every sandbox keeps its own
+# project-local credential file in the persistent home, so OAuth sessions do
+# not share a host file. Sessions, logs, and trust state stay per-project.
+# Session and log mounts use backing paths outside the home so
+# microsandbox's root-owned mountpoint setup cannot create an unwritable
 # ~/.tau before the unprivileged entrypoint runs. Host history and trust
 # decisions are never exposed or modified.
 # host-perms=mirror: mirror guest rwx bits to the host inode so sandbox-created
@@ -404,12 +404,10 @@ for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
     fi
     MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
 done
-if [ -f "$CONFIG_DIR/credentials.json" ] && [ ! -L "$CONFIG_DIR/credentials.json" ]; then
-    MOUNT_ARGS+=(-v "$CONFIG_DIR/credentials.json:/etc/tau-sandbox/shared/credentials.json")
-    ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=1")
-else
-    ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=0")
-fi
+# Credentials are project-local on every launch: the host file is never
+# mounted, so the entrypoint's shared-credentials branch stays disabled and
+# each sandbox keeps its own credential file in the persistent home.
+ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=0")
 [ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents:ro")
 MOUNT_ARGS+=(
     -v "$SESSIONS_VOLUME:/var/lib/tau-sandbox/sessions"

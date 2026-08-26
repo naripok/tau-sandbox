@@ -1,10 +1,10 @@
 """Security-focused unit tests for run.sh and config files.
 
 These prove at the configuration level (no KVM required) that the sandbox
-exposes only declared host paths, keeps host bootstrap sources read-only except
-for credentials, isolates writable Tau state, never leaks ambient environment
-variables, and rejects dangerous package declarations. Runtime enforcement is
-microsandbox's contract and is covered by integration tests.
+exposes only declared host paths, keeps host bootstrap sources read-only,
+isolates writable Tau state, never leaks ambient environment variables, and
+rejects dangerous package declarations. Runtime enforcement is microsandbox's
+contract and is covered by integration tests.
 """
 import os
 import pathlib
@@ -21,7 +21,8 @@ def _run_line(msb_log):
 
 def test_only_expected_paths_are_mounted(tmp_path):
     """The allowlist contains the project, isolated state, immutable prompt,
-    read-only bootstrap sources, and the credential-file exception only."""
+    and read-only bootstrap sources; the host credential file is never
+    mounted."""
     (tmp_path / ".env").write_text("")
     tau_dir = tmp_path / ".tau"
     tau_dir.mkdir()
@@ -38,18 +39,15 @@ def test_only_expected_paths_are_mounted(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = _run_line(msb_log)
-    assert run_line.count(" -v ") == 9
+    assert run_line.count(" -v ") == 8
     assert f"-v {tmp_path.resolve()}:/workspace" in run_line
     assert f"tau-persist-{tmp_path.name}-" in run_line and ":/home/tau" in run_line
     assert f"-v {tau_dir.resolve()}:/home/tau/.tau" not in run_line
     assert ":/etc/tau-sandbox/bootstrap/tau/settings.json:ro" in run_line
     assert f"-v {tau_dir.resolve()}/settings.json:" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
-    assert (
-        f"-v {tau_dir.resolve()}/credentials.json:"
-        "/etc/tau-sandbox/shared/credentials.json"
-    ) in run_line
-    assert f"{tau_dir.resolve()}/credentials.json:/home/tau/.tau/credentials.json" not in run_line
+    assert "credentials.json" not in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
     assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
     assert f"-v {tau_dir.resolve()}/sessions" not in run_line
     assert f"-v {tau_dir.resolve()}/logs" not in run_line
@@ -64,8 +62,9 @@ def test_only_expected_paths_are_mounted(tmp_path):
     assert "/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro" in run_line
 
 
-def test_host_config_is_bootstrap_only_except_credentials(tmp_path):
-    """Host config mounts read-only outside Tau's writable home path."""
+def test_host_config_is_bootstrap_only(tmp_path):
+    """Host config mounts read-only outside Tau's writable home path; the
+    host credential file is never mounted."""
     (tmp_path / ".env").write_text("")
     tau_dir = tmp_path / ".tau"
     tau_dir.mkdir()
@@ -77,13 +76,8 @@ def test_host_config_is_bootstrap_only_except_credentials(tmp_path):
     assert ":/etc/tau-sandbox/bootstrap/tau/settings.json:ro" in run_line
     assert f"{tau_dir.resolve()}/settings.json:" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
-    credential_mount = (
-        f"{tau_dir.resolve()}/credentials.json:"
-        "/etc/tau-sandbox/shared/credentials.json"
-    )
-    assert credential_mount in run_line
-    assert credential_mount + ":ro" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=1" in run_line
+    assert "credentials.json" not in run_line
+    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
     assert "/home/tau/.agents" not in run_line
 
 
