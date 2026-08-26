@@ -18,11 +18,15 @@ closed. That the allowed dialect actually boots
 the sandbox is verified end-to-end by the integration suite; this guard
 only proves the entrypoint stays inside the dialect.
 """
+import json
 import os
 import pathlib
 import re
 import shlex
 import subprocess
+import sys
+import threading
+import time
 
 import pytest
 import tree_sitter_bash
@@ -719,12 +723,122 @@ def test_entrypoint_sets_persistent_env():
 # --- tau-wrapper.py ---
 
 
+_STOCK_TAU_SITE_PACKAGES = pathlib.Path("/opt/tau/lib/python3.14/site-packages")
+
+
 def test_tau_wrapper_injects_immutable_prompt():
+    """Prove the wrapper text still carries the prompt injection: the
+    immutable sandbox-context flag and path stay on every launch."""
     text = _read("tau-wrapper.py")
     assert "--append-system-prompt" in text
     assert "/etc/tau-sandbox/APPEND_SYSTEM.md" in text
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" in text
-    assert "os.fsync" in text
+
+
+def test_tau_wrapper_has_no_in_place_credential_writer():
+    """Prove the wrapper no longer patches FileCredentialStore._save: the
+    shared-credential bind mount is gone, so the project-local credential
+    file is written only by Tau's stock atomic writer. A resurrected patch
+    (its _save binding, credentials import, or activation env var) would
+    reintroduce an in-place writer that tears under concurrent readers."""
+    text = _read("tau-wrapper.py")
+    assert "_save" not in text
+    assert "credentials" not in text
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in text
+
+
+def test_tau_wrapper_prepends_prompt_flag_before_app(tmp_path):
+    """Prove the wrapper inserts the prompt flag into sys.argv before
+    calling app(): run the wrapper under the test interpreter with a stub
+    tau_coding.cli app on PYTHONPATH and assert the recorded argv shows the
+    flag at index 1 with the caller's arguments preserved after it."""
+    stub_root = tmp_path / "stub"
+    package_dir = stub_root / "tau_coding"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("")
+    record_path = tmp_path / "argv-record.json"
+    (package_dir / "cli.py").write_text(
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "def app() -> int:\n"
+        "    with open(os.environ['WRAPPER_ARGV_RECORD'], 'w', encoding='utf-8') as handle:\n"
+        "        json.dump(sys.argv, handle)\n"
+        "    return 0\n"
+    )
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(stub_root),
+        WRAPPER_ARGV_RECORD=str(record_path),
+    )
+    result = subprocess.run(
+        [sys.executable, str(CONFIG_DIR / "tau-wrapper.py"), "serve", "--model", "gpt-5"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    recorded = json.loads(record_path.read_text(encoding="utf-8"))
+    assert recorded == [
+        str(CONFIG_DIR / "tau-wrapper.py"),
+        "--append-system-prompt",
+        "/etc/tau-sandbox/APPEND_SYSTEM.md",
+        "serve",
+        "--model",
+        "gpt-5",
+    ]
+
+
+def _stock_file_credential_store(monkeypatch) -> type:
+    """FileCredentialStore from the installed tau_coding package, whose
+    stock atomic writer now owns the project-local credential file."""
+    monkeypatch.syspath_prepend(str(_STOCK_TAU_SITE_PACKAGES))
+    from tau_coding.credentials import FileCredentialStore
+
+    return FileCredentialStore
+
+
+def test_stock_credential_writer_keeps_whole_file_guarantee(tmp_path, monkeypatch):
+    """Guard the whole-file guarantee the wrapper change now rests on: the
+    stock FileCredentialStore._save writes a temp file beside the target
+    and atomically renames it into place, so a concurrent reader observes a
+    complete old or complete new credential object, never a partial file.
+    This characterization test passes before and after the wrapper change;
+    it guards against a regression to an in-place writer."""
+    credential_store = _stock_file_credential_store(monkeypatch)
+    path = tmp_path / "credentials.json"
+    store = credential_store(path)
+    store.set("seed", "x")  # the target file exists for the whole run
+    stop = threading.Event()
+    violations: list[BaseException] = []
+    observations: list[dict] = []
+
+    def read_until_stopped() -> None:
+        while not stop.is_set():
+            try:
+                raw = path.read_text(encoding="utf-8")
+                data = json.loads(raw)
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                violations.append(exc)
+                return
+            if not isinstance(data, dict):
+                violations.append(
+                    ValueError(f"credential file was not an object: {raw[:80]!r}")
+                )
+                return
+            observations.append(data)
+            time.sleep(0)
+
+    reader = threading.Thread(target=read_until_stopped)
+    reader.start()
+    try:
+        for index in range(300):
+            store.set(f"key-{index}", "x" * 2000)
+    finally:
+        stop.set()
+        reader.join(timeout=10)
+    assert not reader.is_alive()
+    assert violations == []
+    assert observations  # the reader actually overlapped the writes
 
 
 # --- documentation contracts: project secrets ---
