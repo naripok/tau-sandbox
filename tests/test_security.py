@@ -47,7 +47,7 @@ def test_only_expected_paths_are_mounted(tmp_path):
     assert f"-v {tau_dir.resolve()}/settings.json:" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     assert "credentials.json" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
     assert f"-v {tau_dir.resolve()}/sessions" not in run_line
     assert f"-v {tau_dir.resolve()}/logs" not in run_line
@@ -77,7 +77,7 @@ def test_host_config_is_bootstrap_only(tmp_path):
     assert f"{tau_dir.resolve()}/settings.json:" not in run_line
     assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
     assert "credentials.json" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert "/home/tau/.agents" not in run_line
 
 

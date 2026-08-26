@@ -328,7 +328,7 @@ def test_run_script_mounts_host_config_as_bootstrap_without_shared_credentials(t
     assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
     assert f"-v {tau_dir.resolve()}/trust.json.lock" not in run_line
     assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_run_script_follows_host_config_symlinks(tmp_path):
@@ -379,7 +379,7 @@ def test_run_script_skips_missing_host_config_mounts(tmp_path):
     assert f"{tmp_path.resolve()}/.tau" not in run_line
     assert f"{tmp_path.resolve()}/.agents" not in run_line
     assert "credentials.json" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert ":/var/lib/tau-sandbox/sessions" in run_line
     assert ":/var/lib/tau-sandbox/logs" in run_line
 
@@ -405,7 +405,7 @@ def test_run_script_discovers_nearest_ancestor_tau_config(tmp_path):
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert "credentials.json" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert 'settings.json\t{"scope": "project"}' in snapshot_contents.read_text()
 
 
@@ -484,7 +484,7 @@ def test_run_script_tau_config_dir_override_beats_discovery(tmp_path):
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert "credentials.json" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert 'settings.json\t{"scope": "override"}' in snapshot_contents.read_text()
 
 
@@ -502,7 +502,7 @@ def test_run_script_dangling_tau_symlink_falls_back_to_default(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=workdir)
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_run_script_resources_are_overridable(tmp_path):
@@ -1165,7 +1165,7 @@ def test_shared_bootstrap_entry_list_drives_snapshot(tmp_path):
     assert f":{bootstrap}/sessions" not in run_line
     assert f":{bootstrap}/logs" not in run_line
     assert f":{bootstrap}/trust.json" not in run_line
-    assert "-e TAU_SANDBOX_SHARED_CREDENTIALS=0" in run_line
+    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_relative_env_file_works_with_present_pair(tmp_path):

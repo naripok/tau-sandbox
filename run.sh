@@ -404,10 +404,6 @@ for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
     fi
     MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
 done
-# Credentials are project-local on every launch: the host file is never
-# mounted, so the entrypoint's shared-credentials branch stays disabled and
-# each sandbox keeps its own credential file in the persistent home.
-ENV_ARGS+=(-e "TAU_SANDBOX_SHARED_CREDENTIALS=0")
 [ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents:ro")
 MOUNT_ARGS+=(
     -v "$SESSIONS_VOLUME:/var/lib/tau-sandbox/sessions"
