@@ -4,6 +4,7 @@ Prove the image contract the sandbox depends on: a pinned Tau install,
 the declared tool set, the entrypoint, the unprivileged user, and support
 for per-project extra packages via ARG EXTRA_PACKAGES.
 """
+
 import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
@@ -56,7 +57,7 @@ def test_containerfile_pins_tau_ref():
 
 def test_containerfile_pins_tau_ref_with_refresh_lock():
     # The pinned commit carries the cross-process OAuth refresh lock.
-    assert "ARG TAU_REF=b27e813004ec92b555dfafb1bf7cc2d77a7453bf" in _text()
+    assert "ARG TAU_REF=9bcad9da418622985fb4f0a644e29fa5471a133d" in _text()
 
 
 def test_containerfile_has_launchers():
