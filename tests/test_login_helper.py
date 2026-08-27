@@ -3,19 +3,21 @@
 These tests prove the host helper derives the same per-project volume as
 run.sh, isolates projects from each other, writes the exact credential
 document guest Tau reads, validates pasted redirect state, targets the
-SDK write at the project volume and the credential path, and never puts
-token values on stdout or stderr. No browser, network, or microsandbox
-runtime is required: the SDK call and the token exchange are stubbed.
+credential write at the concrete host directory the msb CLI reports, and
+never puts token values on stdout or stderr. No browser, network, or
+microsandbox runtime is required: a fake ``msb`` executable on PATH backs
+``volume inspect`` and ``volume create`` (as conftest does for run.sh),
+and the token exchange is stubbed.
 """
 import base64
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
-from types import SimpleNamespace
 
 import pytest
 
@@ -58,35 +60,67 @@ def _jwt(payload=None):
     return f"{enc(b'{}')}.{enc(body.encode('utf-8'))}.{enc(b'signature')}"
 
 
-class RecordingFs:
-    """An async VolumeFs stand-in recording writes and reporting existing paths.
+FAKE_MSB = """#!/bin/bash
+# Fake msb CLI for tau-login-openai tests: volume inspect/create backed
+# by a real temp root of named volume directories.
+#   MSB_VOLUME_ROOT          directory holding the fake volumes
+#   MSB_VOLUME_LOG           path that records every volume create call
+#   MSB_VOLUME_CREATE_STATUS exit code for volume create (default 0)
+#   MSB_VOLUME_INSPECT_NOPATH=1 omits the Path: line from inspect output
+root="${MSB_VOLUME_ROOT:?}"
+log="${MSB_VOLUME_LOG:-/dev/null}"
+case "${1:-}" in
+    volume)
+        case "${2:-}" in
+            inspect)
+                name="${3:-}"
+                if [ -d "$root/$name" ]; then
+                    if [ "${MSB_VOLUME_INSPECT_NOPATH:-0}" = "1" ]; then
+                        printf 'Name: %s\\nKind: dir\\n' "$name"
+                    else
+                        printf 'Name: %s\\nKind: dir\\nPath: %s\\n' \\
+                            "$name" "$root/$name"
+                    fi
+                    exit 0
+                fi
+                echo "error: volume not found: $name" >&2
+                exit 1
+                ;;
+            create)
+                name="${3:-}"
+                echo "create:$name" >> "$log"
+                if [ "${MSB_VOLUME_CREATE_STATUS:-0}" != "0" ]; then
+                    echo "error: volume create failed: $name" >&2
+                    exit "$MSB_VOLUME_CREATE_STATUS"
+                fi
+                mkdir -p "$root/$name"
+                exit 0
+                ;;
+        esac
+        ;;
+esac
+exit 0
+"""
 
-    Every method is a coroutine exactly like the real SDK, so a sync call
-    returns an un-awaited coroutine and records nothing; assertions on
-    recorded writes then fail if the helper forgets an await.
+
+def _install_fake_msb(monkeypatch, tmp_path, volume_root):
+    """Put a fake msb CLI on PATH backed by a real temp volume root.
+
+    Returns the log Path that records ``msb volume create`` calls.
+    Mirrors the fake-binaries-on-PATH pattern conftest and test_run use.
     """
-
-    def __init__(self, written, volume, seed=None):
-        self.written = written
-        self.volume = volume
-        self._store = dict(seed or {})
-
-    async def exists(self, path):
-        return True
-
-    async def read(self, path):
-        return self._store.get(path, b"{}")
-
-    async def mkdir(self, path):
-        raise AssertionError(f"mkdir on existing dirs-only fake: {path}")
-
-    async def write(self, path, data):
-        self.written.append((path, data))
-        self._store[path] = data
-
-    def stored(self, path):
-        """Return the stored bytes for a path, mirroring a completed write."""
-        return self._store.get(path)
+    volume_root.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    msb = fake_bin / "msb"
+    msb.write_text(FAKE_MSB)
+    msb.chmod(0o755)
+    log = tmp_path / "msb-volume.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("MSB_VOLUME_ROOT", str(volume_root))
+    monkeypatch.setenv("MSB_VOLUME_LOG", str(log))
+    return log
 
 
 @pytest.fixture
@@ -208,114 +242,125 @@ def test_parse_authorization_input_accepts_redirect_forms(helper):
     assert helper.parse_authorization_input("   ") == helper.AuthorizationCode()
 
 
-# --- Credential write targets the project volume ---
+# --- Credential write targets the project volume's host directory ---
 
 
-def test_write_step_creates_missing_volume_then_writes(helper, monkeypatch, tmp_path):
-    """A missing volume is created through the SDK first; the document is
-    written to /home/tau/.tau/credentials.json with parent dirs ensured."""
+def _volume_credential_file(volume_root, volume_name):
+    """The host path the helper writes inside the named volume."""
+    return volume_root / volume_name / "home" / "tau" / ".tau" / "credentials.json"
+
+
+def test_volume_host_path_creates_missing_volume_and_resolves(helper, monkeypatch, tmp_path):
+    """volume_host_path creates a missing volume through msb and parses
+    the Path: line into the volume's host directory."""
+    volume = "tau-persist-proj-12345678"
+    volume_root = tmp_path / "volumes"
+    create_log = _install_fake_msb(monkeypatch, tmp_path, volume_root)
+
+    host_path = helper.volume_host_path(volume)
+
+    assert host_path == volume_root / volume
+    assert create_log.read_text(encoding="utf-8") == f"create:{volume}\n"
+
+
+def test_write_credential_creates_missing_volume_and_writes_nested_file(
+    helper, monkeypatch, tmp_path
+):
+    """A missing volume is created through msb first; the document lands
+    at <host_path>/home/tau/.tau/credentials.json with the full directory
+    chain created inside the volume."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
-    created = []
-    written = []
-    made_dirs = []
-
-    class VolumeNotFoundError(Exception):
-        pass
-
-    class FakeFs:
-        async def exists(self, path):
-            return False
-
-        async def mkdir(self, path):
-            made_dirs.append(path)
-
-        async def write(self, path, data):
-            written.append((path, data))
-
-    class FakeVolume:
-        @staticmethod
-        async def get(name):
-            raise VolumeNotFoundError(name)
-
-        @staticmethod
-        async def create(name, **kwargs):
-            created.append(name)
-            return SimpleNamespace(fs=FakeFs())
-
-    monkeypatch.setitem(
-        sys.modules,
-        "microsandbox",
-        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=VolumeNotFoundError),
-    )
-    helper.write_credential(volume, "{}\n")
-
-    assert created == [volume]
-    assert made_dirs == ["/home", "/home/tau", "/home/tau/.tau"]
-    assert written == [("/home/tau/.tau/credentials.json", b"{}\n")]
-
-
-def test_write_step_reuses_existing_volume(helper, monkeypatch, tmp_path):
-    """An existing project volume is used as-is: no create call."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    volume = helper.volume_name_for(str(project))
-    written = []
-
-    class FakeVolume:
-        @staticmethod
-        async def get(name):
-            if name != volume:
-                raise AssertionError(f"expected {volume}, got {name}")
-            return SimpleNamespace(fs=RecordingFs(written, volume))
-
-        @staticmethod
-        async def create(name, **kwargs):
-            raise AssertionError("existing volume must not be created")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "microsandbox",
-        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
-    )
-    content = helper.credential_json("access-token", "refresh-token", 1_758_908_400_123, "acct_1")
-    helper.write_credential(volume, content)
-
-    assert written == [("/home/tau/.tau/credentials.json", content.encode("utf-8"))]
-
-
-def test_write_completes_before_write_credential_returns(helper, monkeypatch, tmp_path):
-    """The final fs.write is awaited: the credential is present in the
-    fake volume store once write_credential returns instead of being
-    dropped as an un-awaited coroutine."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    volume = helper.volume_name_for(str(project))
-    written = []
-    fs = RecordingFs(written, volume)
-
-    class FakeVolume:
-        @staticmethod
-        async def get(name):
-            return SimpleNamespace(fs=fs)
-
-        @staticmethod
-        async def create(name, **kwargs):
-            raise AssertionError("existing volume must not be created")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "microsandbox",
-        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
-    )
+    volume_root = tmp_path / "volumes"
+    create_log = _install_fake_msb(monkeypatch, tmp_path, volume_root)
     content = helper.credential_json(
         "access-token", "refresh-token", 1_758_908_400_123, "acct_1"
     )
+
     helper.write_credential(volume, content)
 
-    assert written == [("/home/tau/.tau/credentials.json", content.encode("utf-8"))]
-    assert fs.stored("/home/tau/.tau/credentials.json") == content.encode("utf-8")
+    credential_file = _volume_credential_file(volume_root, volume)
+    assert credential_file.read_text(encoding="utf-8") == content
+    assert create_log.read_text(encoding="utf-8") == f"create:{volume}\n"
+
+
+def test_write_credential_reuses_existing_volume_without_create(
+    helper, monkeypatch, tmp_path
+):
+    """An existing volume is used as-is: msb volume create never runs
+    (inspect-first behavior)."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    create_log = _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    (volume_root / volume).mkdir(parents=True)
+    content = helper.credential_json(
+        "access-token", "refresh-token", 1_758_908_400_123, "acct_1"
+    )
+
+    helper.write_credential(volume, content)
+
+    assert create_log.read_text(encoding="utf-8") == ""
+    credential_file = _volume_credential_file(volume_root, volume)
+    assert credential_file.read_text(encoding="utf-8") == content
+
+
+def test_write_credential_writes_mode_0600(helper, monkeypatch, tmp_path):
+    """The written credential file is chmod 0600: readable or writable
+    only by the owner."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+
+    helper.write_credential(
+        volume, helper.credential_json("access", "refresh", 1_758_908_400_123, "acct_1")
+    )
+
+    credential_file = _volume_credential_file(volume_root, volume)
+    assert credential_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_credential_without_msb_raises_clear_error(helper, monkeypatch, tmp_path):
+    """A missing msb binary raises an error that names the fix; nothing
+    is written."""
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+
+    with pytest.raises(helper.OAuthError, match="install the microsandbox CLI"):
+        helper.write_credential(volume, "{}\n")
+
+
+def test_write_credential_inspect_without_path_line_raises(helper, monkeypatch, tmp_path):
+    """Inspect output without a parseable Path: line raises a clear error
+    instead of guessing a default host path."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    _install_fake_msb(monkeypatch, tmp_path, tmp_path / "volumes")
+    monkeypatch.setenv("MSB_VOLUME_INSPECT_NOPATH", "1")
+
+    with pytest.raises(helper.OAuthError, match="no host path"):
+        helper.write_credential(volume, "{}\n")
+
+
+def test_write_credential_create_failure_raises(helper, monkeypatch, tmp_path):
+    """A nonzero msb volume create exit raises a clear error."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    _install_fake_msb(monkeypatch, tmp_path, tmp_path / "volumes")
+    monkeypatch.setenv("MSB_VOLUME_CREATE_STATUS", "1")
+
+    with pytest.raises(helper.OAuthError, match="volume create"):
+        helper.write_credential(volume, "{}\n")
 
 
 def test_volume_name_regex_requires_true_end_of_name(helper):
@@ -333,7 +378,10 @@ def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
-    written = []
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    credential_file = _volume_credential_file(volume_root, volume)
+    credential_file.parent.mkdir(parents=True)
     stored = {
         "anthropic-key": "sk-ant-42",
         "openai-codex": {
@@ -344,129 +392,71 @@ def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
             "account_id": "old-acct",
         },
     }
+    credential_file.write_text(json.dumps(stored), encoding="utf-8")
 
-    class FakeVolume:
-        @staticmethod
-        async def get(name):
-            seed = {"/home/tau/.tau/credentials.json": json.dumps(stored).encode("utf-8")}
-            fs = RecordingFs(written, volume, seed=seed)
-            return SimpleNamespace(fs=fs)
-
-        @staticmethod
-        async def create(name, **kwargs):
-            raise AssertionError("existing volume must not be created")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "microsandbox",
-        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
-    )
     helper.write_credential(
         volume, helper.credential_json("new-access", "new-refresh", 2, "new-acct")
     )
 
-    assert written == [
-        (
-            "/home/tau/.tau/credentials.json",
-            (
-                "{\n"
-                '  "anthropic-key": "sk-ant-42",\n'
-                '  "openai-codex": {\n'
-                '    "access": "new-access",\n'
-                '    "account_id": "new-acct",\n'
-                '    "expires": 2,\n'
-                '    "refresh": "new-refresh",\n'
-                '    "type": "oauth"\n'
-                "  }\n"
-                "}\n"
-            ).encode("utf-8"),
-        )
-    ]
+    expected = (
+        "{\n"
+        '  "anthropic-key": "sk-ant-42",\n'
+        '  "openai-codex": {\n'
+        '    "access": "new-access",\n'
+        '    "account_id": "new-acct",\n'
+        '    "expires": 2,\n'
+        '    "refresh": "new-refresh",\n'
+        '    "type": "oauth"\n'
+        "  }\n"
+        "}\n"
+    )
+    assert credential_file.read_text(encoding="utf-8") == expected
 
 
-def test_write_without_existing_file_produces_single_entry_document(helper, monkeypatch, tmp_path):
+def test_write_without_existing_file_produces_single_entry_document(
+    helper, monkeypatch, tmp_path
+):
     """A missing credentials.json yields exactly the new single-entry
-    document; no read happens and no other entry appears."""
+    document; no other entry appears."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
-    written = []
-    reads = []
-
-    class FakeFs:
-        async def exists(self, path):
-            return False
-
-        async def mkdir(self, path):
-            pass
-
-        async def read(self, path):
-            reads.append(path)
-            raise AssertionError("read must not be called for a missing file")
-
-        async def write(self, path, data):
-            written.append((path, data))
-
-    class FakeVolume:
-        @staticmethod
-        async def get(name):
-            return SimpleNamespace(fs=FakeFs())
-
-        @staticmethod
-        async def create(name, **kwargs):
-            raise AssertionError("existing volume must not be created")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "microsandbox",
-        SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    (volume_root / volume).mkdir(parents=True)
+    new_doc = helper.credential_json(
+        "new-access", "new-refresh", 1_758_908_400_123, "new-acct"
     )
-    new_doc = helper.credential_json("new-access", "new-refresh", 1_758_908_400_123, "new-acct")
+
     helper.write_credential(volume, new_doc)
 
-    assert reads == []
-    assert written == [("/home/tau/.tau/credentials.json", new_doc.encode("utf-8"))]
-    assert set(json.loads(written[0][1])) == {"openai-codex"}
+    credential_file = _volume_credential_file(volume_root, volume)
+    assert credential_file.read_text(encoding="utf-8") == new_doc
+    assert set(json.loads(credential_file.read_text(encoding="utf-8"))) == {"openai-codex"}
 
 
-def test_write_corrupt_credentials_file_fails_without_writing(helper, monkeypatch, tmp_path):
+def test_write_corrupt_credentials_file_fails_without_writing(
+    helper, monkeypatch, tmp_path
+):
     """A stored document that is not a JSON object raises a clear error
-    and writes nothing, so a corrupt file is never destroyed."""
+    and leaves the stored file untouched, so a corrupt file is never
+    destroyed."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
     new_doc = helper.credential_json("new-access", "new-refresh", 2, "new-acct")
 
-    for corrupt in (b"{not json", b"[1, 2, 3]"):
-        written = []
+    for corrupt in (b"{not json", b"[1, 2, 3]", b"\xff\xfe{not json"):
+        credential_file = _volume_credential_file(volume_root, volume)
+        credential_file.parent.mkdir(parents=True, exist_ok=True)
+        credential_file.write_bytes(corrupt)
 
-        class FakeFs:
-            async def exists(self, path):
-                return True
-
-            async def read(self, path):
-                return corrupt
-
-            async def write(self, path, data):
-                written.append((path, data))
-
-        class FakeVolume:
-            @staticmethod
-            async def get(name):
-                return SimpleNamespace(fs=FakeFs())
-
-            @staticmethod
-            async def create(name, **kwargs):
-                raise AssertionError("existing volume must not be created")
-
-        monkeypatch.setitem(
-            sys.modules,
-            "microsandbox",
-            SimpleNamespace(Volume=FakeVolume, VolumeNotFoundError=RuntimeError),
-        )
         with pytest.raises(helper.OAuthError, match="refusing to overwrite"):
             helper.write_credential(volume, new_doc)
-        assert written == []
+
+        assert credential_file.read_bytes() == corrupt
 
 
 # --- End-to-end output never contains tokens ---
@@ -484,10 +474,11 @@ def _stub_login(helper, monkeypatch, tmp_path, written, server):
         "exchange_openai_codex_authorization_code",
         lambda code, verifier: (_jwt(), "refresh-token-xyz", 1_758_908_400_123),
     )
-    async def fake_volume_fs(name):
-        return RecordingFs(written, name)
 
-    monkeypatch.setattr(helper, "_project_volume_fs", fake_volume_fs)
+    def fake_write_credential(_volume_name, content):
+        written.append(("/home/tau/.tau/credentials.json", content.encode("utf-8")))
+
+    monkeypatch.setattr(helper, "write_credential", fake_write_credential)
     return project, flow
 
 

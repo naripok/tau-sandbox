@@ -31,6 +31,9 @@ info "msb is working ($(msb --version 2>/dev/null | head -1))"
 # podman (used to build the OCI image that msb runs)
 command -v podman >/dev/null 2>&1 || fail "podman not found. Install it first: https://podman.io/docs/installation"
 
+# python3 (runs the host login helper, lib/tau-login-openai)
+command -v python3 >/dev/null 2>&1 || fail "python3 not found. Install Python 3.10+ and rerun."
+
 # KVM is required on Linux (hardware virtualization). macOS uses
 # Virtualization.framework and needs no /dev/kvm.
 if [ "$(uname -s)" = "Linux" ] && [ ! -e /dev/kvm ]; then
@@ -64,7 +67,9 @@ fi
 # --- Host login helper ---
 # The guest cannot open a browser or receive the OAuth redirect, so login
 # runs on the host via this helper and writes the credential into the
-# project's persistent volume. Link it next to the msb CLI.
+# project's persistent volume. The helper uses the msb CLI (already a
+# prerequisite) and needs python3 on the host. Link it next to the msb
+# CLI.
 LOCAL_BIN="${HOME}/.local/bin"
 mkdir -p "$LOCAL_BIN"
 ln -sf "$SCRIPT_DIR/lib/tau-login-openai" "${LOCAL_BIN}/tau-login-openai"

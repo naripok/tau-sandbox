@@ -7,9 +7,14 @@ into the project's persistent home volume as ``/home/tau/.tau/
 credentials.json``, the exact document and path guest Tau reads. Each
 project gets its own volume and therefore its own token family. The
 OAuth flow is vendored from the fork's ``src/tau_coding/oauth.py`` so the
-host needs no Tau package installed; the only third-party import is
-``microsandbox``, used lazily for the volume write and hidden behind
-``_project_volume_fs`` so tests can stub it.
+host needs no Tau package installed.
+
+The volume write uses the ``msb`` CLI, which the host already has from
+installing the sandbox: ``msb volume inspect`` reports the volume's host
+directory, and ``msb volume create`` makes a missing volume. Named
+``dir`` volumes are plain host directories, so the write is ordinary
+file I/O with no daemon or Python SDK. The credential file is written
+with mode 0600 so only the owner reads it.
 
 Usage: tau-login-openai PROJECT_PATH
 
@@ -23,9 +28,10 @@ import base64
 import hashlib
 import json
 import os
-import posixpath
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +41,7 @@ import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
@@ -444,46 +451,101 @@ def credential_json(access: str, refresh: str, expires: int, account_id: str) ->
     return json.dumps({CREDENTIAL_PROVIDER: credential}, indent=2, sort_keys=True) + "\n"
 
 
+def volume_host_path(volume_name: str) -> Path:
+    """Return the host directory backing the named volume.
+
+    Locates the ``msb`` CLI, inspects the volume, and creates it when
+    missing. ``msb volume inspect`` reports the host directory on its
+    ``Path:`` line; named ``dir`` volumes are plain host directories, so
+    the caller writes there with ordinary file I/O. Raises OAuthError
+    when msb is missing or no host path resolves; never guesses a path.
+    """
+    msb = shutil.which("msb")
+    if msb is None:
+        raise OAuthError(
+            "msb not found on PATH; install the microsandbox CLI "
+            "(https://docs.microsandbox.dev/quickstart)"
+        )
+    host_path = _volume_host_path_from_inspect(msb, volume_name)
+    if host_path is None:
+        result = subprocess.run(
+            [msb, "volume", "create", volume_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit {result.returncode}"
+            raise OAuthError(
+                f"msb volume create {volume_name} failed: {detail}"
+            )
+        host_path = _volume_host_path_from_inspect(msb, volume_name)
+    if host_path is None:
+        raise OAuthError(
+            f"msb volume inspect {volume_name} reported no host path"
+        )
+    return host_path
+
+
+def _volume_host_path_from_inspect(msb: str, volume_name: str) -> Path | None:
+    """Run msb volume inspect and parse its ``Path:`` line.
+
+    Returns None when inspect fails or reports no parseable host path.
+    """
+    result = subprocess.run(
+        [msb, "volume", "inspect", volume_name],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("Path:"):
+            value = line[len("Path:"):].strip()
+            if value:
+                return Path(value)
+    return None
+
+
 def write_credential(volume_name: str, content: str) -> None:
     """Write the credential document into the project volume.
 
-    Creates the volume through the SDK when absent and ensures the
-    /home/tau/.tau directory chain inside it. The write is a
-    read-merge-write: the stored file keeps every entry that is not
-    "openai-codex", a missing file starts from the new document, and a
-    stored file that is not a JSON object fails without writing. The
-    VolumeFs API exposes no chmod or write mode, so file permissions
-    inside the volume are governed by the SDK/host volume store.
-
-    The SDK's VolumeFs methods are async, so the whole read-merge-write
-    runs inside one asyncio.run on a single event loop in
-    _write_credential_async; every fs call inside is awaited.
+    Resolves the volume's host directory through the ``msb`` CLI,
+    creating a missing volume. Writes the merged document to
+    ``<host_path>/home/tau/.tau/credentials.json`` (creating the
+    directory chain) with mode 0600. The write is a read-merge-write:
+    the stored file keeps every entry that is not "openai-codex", a
+    missing file starts from the new document, and a stored file that is
+    not a JSON object fails without writing.
     """
-    import asyncio
+    host_path = volume_host_path(volume_name)
+    credential_file = host_path.joinpath(CREDENTIAL_PATH.lstrip("/"))
+    credential_file.parent.mkdir(parents=True, exist_ok=True)
+    stored_text: str | None = None
+    if credential_file.exists():
+        try:
+            stored_text = credential_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise OAuthError(
+                f"{CREDENTIAL_PATH} in the project volume is corrupt; "
+                "refusing to overwrite"
+            ) from error
+    merged = _merge_credential_document(stored_text, content)
+    credential_file.write_text(merged, encoding="utf-8")
+    credential_file.chmod(0o600)
 
-    asyncio.run(_write_credential_async(volume_name, content))
 
-
-async def _write_credential_async(volume_name: str, content: str) -> None:
-    """Run the whole read-merge-write for write_credential on one loop."""
-    fs = await _project_volume_fs(volume_name)
-    await _ensure_credential_parents(fs)
-    merged = await _merge_credential_document(fs, content)
-    await fs.write(CREDENTIAL_PATH, merged.encode("utf-8"))
-
-
-async def _merge_credential_document(fs, new_document: str) -> str:
-    """Merge a serialized credential document into the stored file.
+def _merge_credential_document(stored_text: str | None, new_document: str) -> str:
+    """Merge a serialized credential document into the stored file text.
 
     Returns the merged document serialized exactly as the fork's
     FileCredentialStore._save: indent 2, sorted keys, trailing newline.
-    Raises OAuthError when the stored file is not a JSON object so a
+    A missing stored file (None) returns the new document unchanged.
+    Raises OAuthError when the stored text is not a JSON object so a
     corrupt file is never overwritten.
     """
-    if not await fs.exists(CREDENTIAL_PATH):
+    if stored_text is None:
         return new_document
-    raw = await fs.read(CREDENTIAL_PATH)
-    stored_text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
     try:
         stored = json.loads(stored_text)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -498,27 +560,6 @@ async def _merge_credential_document(fs, new_document: str) -> str:
         )
     stored[CREDENTIAL_PROVIDER] = json.loads(new_document)[CREDENTIAL_PROVIDER]
     return json.dumps(stored, indent=2, sort_keys=True) + "\n"
-
-
-async def _project_volume_fs(volume_name: str):
-    """Return a writable VolumeFs for the named volume, creating it if missing."""
-    from microsandbox import Volume, VolumeNotFoundError
-
-    try:
-        handle = await Volume.get(volume_name)
-    except VolumeNotFoundError:
-        handle = await Volume.create(volume_name)
-    return handle.fs
-
-
-async def _ensure_credential_parents(fs) -> None:
-    """Create the /home/tau/.tau directory chain inside the volume when missing."""
-    parts = posixpath.dirname(CREDENTIAL_PATH).strip("/").split("/")
-    current = ""
-    for part in parts:
-        current = f"{current}/{part}"
-        if not await fs.exists(current):
-            await fs.mkdir(current)
 
 
 # --- CLI ---
