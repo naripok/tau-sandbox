@@ -3,11 +3,18 @@
 
 The guest cannot open a browser or receive the OAuth redirect, so this
 CLI runs the Codex authorization flow on the host and writes the result
-into the project's persistent home volume as ``/home/tau/.tau/
-credentials.json``, the exact document and path guest Tau reads. Each
-project gets its own volume and therefore its own token family. The
-OAuth flow is vendored from the fork's ``src/tau_coding/oauth.py`` so the
-host needs no Tau package installed.
+into the project's persistent volume. run.sh mounts the volume at
+/home/tau, so the volume root IS the guest home directory; the document
+is written at ``<volume-root>/.tau/credentials.json``, the exact file
+guest Tau reads at /home/tau/.tau/credentials.json. Each project gets
+its own volume and therefore its own token family.
+
+API-key credentials left over on the host (``~/.tau/credentials.json``,
+from the old shared-file design) are seeded into the volume at login:
+only plain-string entries, never OAuth objects, and only when the
+project does not already define that name. The OAuth flow is vendored
+from the fork's ``src/tau_coding/oauth.py`` so the host needs no Tau
+package installed.
 
 The volume write uses the ``msb`` CLI, which the host already has from
 installing the sandbox: ``msb volume inspect`` reports the volume's host
@@ -56,7 +63,9 @@ OPENAI_CODEX_SUCCESS_MESSAGE = "OpenAI authentication completed. You can close t
 HTTP_TIMEOUT = 60
 
 CREDENTIAL_PROVIDER = "openai-codex"
-CREDENTIAL_PATH = "/home/tau/.tau/credentials.json"
+# The volume root is mounted at /home/tau inside the guest, so the guest
+# path /home/tau/.tau/credentials.json is this volume-root-relative file.
+VOLUME_CREDENTIAL_PATH = "/.tau/credentials.json"
 
 _UPPER_TO_LOWER = bytes.maketrans(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz"
@@ -511,15 +520,19 @@ def write_credential(volume_name: str, content: str) -> None:
     """Write the credential document into the project volume.
 
     Resolves the volume's host directory through the ``msb`` CLI,
-    creating a missing volume. Writes the merged document to
-    ``<host_path>/home/tau/.tau/credentials.json`` (creating the
-    directory chain) with mode 0600. The write is a read-merge-write:
-    the stored file keeps every entry that is not "openai-codex", a
-    missing file starts from the new document, and a stored file that is
-    not a JSON object fails without writing.
+    creating a missing volume. The volume root is mounted at /home/tau
+    inside the guest, so the document lands at the guest path
+    ``<host_path>/.tau/credentials.json`` with mode 0600. Before
+    writing, plain-string API-key entries from the host credential file
+    (~/.tau/credentials.json, optional) are seeded into the document;
+    OAuth objects are never copied, and a project entry with the same
+    name always wins. The write is a read-merge-write: the stored file
+    keeps every entry that is not "openai-codex", a missing file starts
+    from the new document, and a stored file that is not a JSON object
+    fails without writing.
     """
     host_path = volume_host_path(volume_name)
-    credential_file = host_path.joinpath(CREDENTIAL_PATH.lstrip("/"))
+    credential_file = host_path.joinpath(VOLUME_CREDENTIAL_PATH.lstrip("/"))
     credential_file.parent.mkdir(parents=True, exist_ok=True)
     stored_text: str | None = None
     if credential_file.exists():
@@ -527,40 +540,103 @@ def write_credential(volume_name: str, content: str) -> None:
             stored_text = credential_file.read_text(encoding="utf-8")
         except UnicodeDecodeError as error:
             raise OAuthError(
-                f"{CREDENTIAL_PATH} in the project volume is corrupt; "
+                f"{VOLUME_CREDENTIAL_PATH} in the project volume is corrupt; "
                 "refusing to overwrite"
             ) from error
-    merged = _merge_credential_document(stored_text, content)
+    seeded = _seeded_host_api_keys(stored_text)
+    merged = _merge_credential_document(stored_text, content, seeded)
     descriptor = os.open(credential_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(merged)
+    if seeded:
+        names = ", ".join(sorted(seeded))
+        count = len(seeded)
+        word = "key" if count == 1 else "keys"
+        print(f"Seeded {count} API {word} from host credentials: {names}", flush=True)
 
 
-def _merge_credential_document(stored_text: str | None, new_document: str) -> str:
-    """Merge a serialized credential document into the stored file text.
+def _load_host_api_keys() -> dict[str, str]:
+    """Plain-string entries from the host credential file, or {}.
+
+    The host ~/.tau/credentials.json is optional under the per-project
+    design; a missing, unreadable, non-JSON, or non-object file yields
+    nothing, never an error. Only entries whose value is a plain string
+    are returned (Tau stores API keys as strings). OAuth credentials
+    (objects with type: oauth) are never returned: their refresh tokens
+    rotate, and copying one session into several projects
+    reintroduces the rotation race this per-project design fixes.
+    """
+    host_file = Path(os.path.expanduser("~/.tau/credentials.json"))
+    try:
+        raw = host_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    try:
+        stored = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        name: value
+        for name, value in stored.items()
+        if isinstance(value, str) and name != CREDENTIAL_PROVIDER
+    }
+
+
+def _seeded_host_api_keys(stored_text: str | None) -> dict[str, str]:
+    """Host API-key entries the volume does not already define.
+
+    Existing project entries win: a name already present in the stored
+    volume document is never seeded. The host file is optional and only
+    its plain-string entries count (see _load_host_api_keys).
+    """
+    present: set[str] = set()
+    if stored_text is not None:
+        try:
+            stored = json.loads(stored_text)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(stored, dict):
+            present = set(stored)
+    return {
+        name: value for name, value in _load_host_api_keys().items() if name not in present
+    }
+
+
+def _merge_credential_document(
+    stored_text: str | None, new_document: str, seed_entries: dict[str, str] | None = None
+) -> str:
+    """Merge the new provider document plus seeded entries into the stored text.
 
     Returns the merged document serialized exactly as the fork's
     FileCredentialStore._save: indent 2, sorted keys, trailing newline.
-    A missing stored file (None) returns the new document unchanged.
-    Raises OAuthError when the stored text is not a JSON object so a
-    corrupt file is never overwritten.
+    A missing stored file (None) produces a document with the new
+    provider entry (plus any seeded entries). Raises OAuthError when the
+    stored text is not a JSON object so a corrupt file is never
+    overwritten.
     """
     if stored_text is None:
-        return new_document
-    try:
-        stored = json.loads(stored_text)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise OAuthError(
-            f"{CREDENTIAL_PATH} in the project volume is corrupt; "
-            "refusing to overwrite"
-        ) from error
-    if not isinstance(stored, dict):
-        raise OAuthError(
-            f"{CREDENTIAL_PATH} in the project volume is not a JSON object; "
-            "refusing to overwrite"
-        )
-    stored[CREDENTIAL_PROVIDER] = json.loads(new_document)[CREDENTIAL_PROVIDER]
-    return json.dumps(stored, indent=2, sort_keys=True) + "\n"
+        merged: dict = {}
+    else:
+        try:
+            merged = json.loads(stored_text)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise OAuthError(
+                f"{VOLUME_CREDENTIAL_PATH} in the project volume is corrupt; "
+                "refusing to overwrite"
+            ) from error
+        if not isinstance(merged, dict):
+            raise OAuthError(
+                f"{VOLUME_CREDENTIAL_PATH} in the project volume is not a JSON object; "
+                "refusing to overwrite"
+            )
+        merged = dict(merged)
+    if seed_entries:
+        for seed_name, seed_value in seed_entries.items():
+            merged.setdefault(seed_name, seed_value)
+    merged[CREDENTIAL_PROVIDER] = json.loads(new_document)[CREDENTIAL_PROVIDER]
+    return json.dumps(merged, indent=2, sort_keys=True) + "\n"
 
 
 # --- CLI ---

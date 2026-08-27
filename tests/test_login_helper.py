@@ -2,12 +2,14 @@
 
 These tests prove the host helper derives the same per-project volume as
 run.sh, isolates projects from each other, writes the exact credential
-document guest Tau reads, validates pasted redirect state, targets the
-credential write at the concrete host directory the msb CLI reports, and
-never puts token values on stdout or stderr. No browser, network, or
-microsandbox runtime is required: a fake ``msb`` executable on PATH backs
-``volume inspect`` and ``volume create`` (as conftest does for run.sh),
-and the token exchange is stubbed.
+document guest Tau reads, seeds leftover host API keys into the volume
+without copying OAuth sessions, validates pasted redirect state, targets
+the credential write at the concrete host directory the msb CLI reports
+(the volume root, which the guest sees as /home/tau), and never puts
+token values on stdout or stderr. No browser, network, or microsandbox
+runtime is required: a fake ``msb`` executable on PATH backs ``volume
+inspect`` and ``volume create`` (as conftest does for run.sh), and the
+token exchange is stubbed.
 """
 import base64
 import importlib.util
@@ -138,6 +140,25 @@ def helper():
     return module
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_home(monkeypatch, tmp_path):
+    """Point HOME at an empty directory for every test.
+
+    The helper seeds API keys from ~/.tau/credentials.json; pointing HOME
+    at an empty test directory keeps the real host file out of every
+    test and gives the seed tests a place to install a fake host file.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+
+def _fake_host_credentials(tmp_path, text: str):
+    """Write raw text to the fake host ~/.tau/credentials.json."""
+    creds = tmp_path / "home" / ".tau" / "credentials.json"
+    creds.parent.mkdir(parents=True, exist_ok=True)
+    creds.write_text(text, encoding="utf-8")
+    return creds
+
+
 # --- Volume-name derivation mirrors run.sh ---
 
 
@@ -246,8 +267,13 @@ def test_parse_authorization_input_accepts_redirect_forms(helper):
 
 
 def _volume_credential_file(volume_root, volume_name):
-    """The host path the helper writes inside the named volume."""
-    return volume_root / volume_name / "home" / "tau" / ".tau" / "credentials.json"
+    """The host path the helper writes inside the named volume.
+
+    The volume root is mounted at /home/tau in the guest, so the guest
+    path /home/tau/.tau/credentials.json is this volume-root-relative
+    file.
+    """
+    return volume_root / volume_name / ".tau" / "credentials.json"
 
 
 def test_volume_host_path_creates_missing_volume_and_resolves(helper, monkeypatch, tmp_path):
@@ -263,12 +289,12 @@ def test_volume_host_path_creates_missing_volume_and_resolves(helper, monkeypatc
     assert create_log.read_text(encoding="utf-8") == f"create:{volume}\n"
 
 
-def test_write_credential_creates_missing_volume_and_writes_nested_file(
+def test_write_credential_creates_missing_volume_and_writes_at_volume_root(
     helper, monkeypatch, tmp_path
 ):
     """A missing volume is created through msb first; the document lands
-    at <host_path>/home/tau/.tau/credentials.json with the full directory
-    chain created inside the volume."""
+    at <host_path>/.tau/credentials.json — the volume-root file the guest
+    reads at /home/tau/.tau/credentials.json."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
@@ -283,6 +309,31 @@ def test_write_credential_creates_missing_volume_and_writes_nested_file(
     credential_file = _volume_credential_file(volume_root, volume)
     assert credential_file.read_text(encoding="utf-8") == content
     assert create_log.read_text(encoding="utf-8") == f"create:{volume}\n"
+
+
+def test_write_credential_lands_at_guest_visible_path_not_nested_home(
+    helper, monkeypatch, tmp_path
+):
+    """Regression: the file lands at <host_path>/.tau/credentials.json —
+    the exact file guest Tau reads at /home/tau/.tau/credentials.json,
+    since run.sh mounts the volume at /home/tau — and never inside a
+    nested <host_path>/home/tau/... directory in the volume."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    content = helper.credential_json(
+        "access-token", "refresh-token", 1_758_908_400_123, "acct_1"
+    )
+
+    helper.write_credential(volume, content)
+
+    expected = volume_root / volume / ".tau" / "credentials.json"
+    assert expected.read_text(encoding="utf-8") == content
+    nested = volume_root / volume / "home" / "tau" / ".tau" / "credentials.json"
+    assert not nested.exists()
+    assert not (volume_root / volume / "home").exists()
 
 
 def test_write_credential_reuses_existing_volume_without_create(
@@ -323,6 +374,123 @@ def test_write_credential_writes_mode_0600(helper, monkeypatch, tmp_path):
     credential_file = _volume_credential_file(volume_root, volume)
     assert credential_file.stat().st_mode & 0o777 == 0o600
 
+
+def test_write_credential_seeds_host_api_keys_not_oauth(helper, monkeypatch, tmp_path, capsys):
+    """Host API keys (plain strings) are seeded into the volume document;
+    OAuth object entries are never copied; the seed line lists the seeded
+    entry names only, never their values."""
+    _fake_host_credentials(
+        tmp_path,
+        json.dumps(
+            {
+                "openrouter": "sk-or-host-42",
+                "anthropic": {
+                    "type": "oauth",
+                    "access": "host-oauth-access",
+                    "refresh": "host-oauth-refresh",
+                    "expires": 1,
+                    "account_id": "host-acct",
+                },
+            }
+        ),
+    )
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    new_doc = helper.credential_json(
+        "new-access", "new-refresh", 1_758_908_400_123, "new-acct"
+    )
+
+    helper.write_credential(volume, new_doc)
+
+    stored = json.loads(
+        _volume_credential_file(volume_root, volume).read_text(encoding="utf-8")
+    )
+    assert stored["openrouter"] == "sk-or-host-42"
+    assert "anthropic" not in stored
+    assert set(stored) == {"openai-codex", "openrouter"}
+    out = capsys.readouterr().out
+    assert "Seeded 1 API key from host credentials: openrouter" in out
+    for secret in ("sk-or-host-42", "host-oauth-access", "host-oauth-refresh"):
+        assert secret not in out
+
+
+def test_write_credential_existing_project_entry_wins_over_host(
+    helper, monkeypatch, tmp_path, capsys
+):
+    """A project's own entry always wins: a same-named host API key is
+    neither copied into the volume nor named in the seed output."""
+    _fake_host_credentials(
+        tmp_path, json.dumps({"openrouter": "sk-or-host-42"})
+    )
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    credential_file = _volume_credential_file(volume_root, volume)
+    credential_file.parent.mkdir(parents=True, exist_ok=True)
+    credential_file.write_text(
+        json.dumps({"openrouter": "sk-or-project-7"}), encoding="utf-8"
+    )
+
+    helper.write_credential(
+        volume, helper.credential_json("new-access", "new-refresh", 2, "new-acct")
+    )
+
+    stored = json.loads(credential_file.read_text(encoding="utf-8"))
+    assert stored["openrouter"] == "sk-or-project-7"
+    out = capsys.readouterr().out
+    assert "Seeded" not in out
+    assert "sk-or-host-42" not in out
+    assert "sk-or-project-7" not in out
+
+
+def test_write_credential_without_host_file_seeds_nothing(
+    helper, monkeypatch, tmp_path, capsys
+):
+    """With no host credential file there is no seeding, no seed output,
+    and no error: the volume gets exactly the new single-entry document."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    new_doc = helper.credential_json(
+        "new-access", "new-refresh", 1_758_908_400_123, "new-acct"
+    )
+
+    helper.write_credential(volume, new_doc)
+
+    credential_file = _volume_credential_file(volume_root, volume)
+    assert credential_file.read_text(encoding="utf-8") == new_doc
+    assert set(json.loads(credential_file.read_text(encoding="utf-8"))) == {"openai-codex"}
+    assert "Seeded" not in capsys.readouterr().out
+
+
+def test_write_credential_ignores_corrupt_host_file(
+    helper, monkeypatch, tmp_path, capsys
+):
+    """A host credential file that is not a JSON object is treated as
+    absent: no seeding, no seed output, no error."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    volume = helper.volume_name_for(str(project))
+    volume_root = tmp_path / "volumes"
+    _install_fake_msb(monkeypatch, tmp_path, volume_root)
+    new_doc = helper.credential_json(
+        "new-access", "new-refresh", 1_758_908_400_123, "new-acct"
+    )
+
+    for host_text in ("{not json", "[1, 2, 3]", ""):
+        _fake_host_credentials(tmp_path, host_text)
+        helper.write_credential(volume, new_doc)
+
+    credential_file = _volume_credential_file(volume_root, volume)
+    assert credential_file.read_text(encoding="utf-8") == new_doc
+    assert "Seeded" not in capsys.readouterr().out
 
 def test_write_credential_without_msb_raises_clear_error(helper, monkeypatch, tmp_path):
     """A missing msb binary raises an error that names the fix; nothing
@@ -476,7 +644,8 @@ def _stub_login(helper, monkeypatch, tmp_path, written, server):
     )
 
     def fake_write_credential(_volume_name, content):
-        written.append(("/home/tau/.tau/credentials.json", content.encode("utf-8")))
+        # Volume-root-relative guest path; the volume is mounted at /home/tau.
+        written.append((".tau/credentials.json", content.encode("utf-8")))
 
     monkeypatch.setattr(helper, "write_credential", fake_write_credential)
     return project, flow
@@ -508,7 +677,7 @@ def test_browser_login_output_contains_no_tokens(helper, monkeypatch, tmp_path, 
         assert secret not in out.err
 
     assert server.closed
-    assert written[-1][0] == "/home/tau/.tau/credentials.json"
+    assert written[-1][0] == ".tau/credentials.json"
     credential = json.loads(written[-1][1])["openai-codex"]
     assert credential["refresh"] == "refresh-token-xyz"
     assert credential["account_id"] == "acct_42"
@@ -530,7 +699,7 @@ def test_paste_login_output_contains_no_tokens(helper, monkeypatch, tmp_path, ca
         assert secret not in out.out
         assert secret not in out.err
 
-    assert written[-1][0] == "/home/tau/.tau/credentials.json"
+    assert written[-1][0] == ".tau/credentials.json"
     credential = json.loads(written[-1][1])["openai-codex"]
     assert credential["refresh"] == "refresh-token-xyz"
 
