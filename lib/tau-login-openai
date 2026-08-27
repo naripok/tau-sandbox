@@ -531,8 +531,9 @@ def write_credential(volume_name: str, content: str) -> None:
                 "refusing to overwrite"
             ) from error
     merged = _merge_credential_document(stored_text, content)
-    credential_file.write_text(merged, encoding="utf-8")
-    credential_file.chmod(0o600)
+    descriptor = os.open(credential_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(merged)
 
 
 def _merge_credential_document(stored_text: str | None, new_document: str) -> str:
