@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Host-side OpenAI Codex login helper for a per-project sandbox credential.
+"""Host-side OpenAI ChatGPT login helper for a per-project sandbox credential.
 
 The guest cannot open a browser or receive the OAuth redirect, so this
-CLI runs the Codex authorization flow on the host and writes the result
+CLI runs the OpenAI authorization flow on the host and writes the result
 into the project's persistent volume. run.sh mounts the volume at
-/home/tau, so the volume root IS the guest home directory; the document
-is written at ``<volume-root>/.tau/credentials.json``, the exact file
-guest Tau reads at /home/tau/.tau/credentials.json. Each project gets
-its own volume and therefore its own token family.
+/home/opencode, so the volume root IS the guest home directory; the
+document is written at ``<volume-root>/.local/share/opencode/auth.json``,
+the exact file guest opencode reads in its XDG data directory. Each
+project gets its own volume and therefore its own token family.
 
-API-key credentials left over on the host (``~/.tau/credentials.json``,
-from the old shared-file design) are seeded into the volume at login:
-only plain-string entries, never OAuth objects, and only when the
-project does not already define that name. The OAuth flow is vendored
-from the fork's ``src/tau_coding/oauth.py`` so the host needs no Tau
-package installed.
+API-key credentials left over on the host (``~/.local/share/opencode/auth.json``)
+are seeded into the volume at login: only entries of opencode's ``api``
+shape (an object with a string ``key``), never OAuth or well-known
+entries, and only when the project does not already define that name.
+The OAuth flow is vendored from opencode's
+``packages/opencode/src/plugin/openai/codex.ts`` so the host needs no
+opencode installation; the written document uses opencode's own
+``openai`` OAuth entry shape (``expires`` in epoch milliseconds,
+camel-case ``accountId``).
 
 The volume write uses the ``msb`` CLI, which the host already has from
 installing the sandbox: ``msb volume inspect`` reports the volume's host
@@ -23,7 +26,7 @@ directory, and ``msb volume create`` makes a missing volume. Named
 file I/O with no daemon or Python SDK. The credential file is written
 with mode 0600 so only the owner reads it.
 
-Usage: tau-login-openai PROJECT_PATH
+Usage: opencode-login-openai PROJECT_PATH
 
 Tokens never appear in output: progress goes to stdout, errors to
 stderr. Requires Python 3.10+.
@@ -62,15 +65,16 @@ OPENAI_CODEX_CALLBACK_PATH = "/auth/callback"
 OPENAI_CODEX_SUCCESS_MESSAGE = "OpenAI authentication completed. You can close this window."
 HTTP_TIMEOUT = 60
 
-CREDENTIAL_PROVIDER = "openai-codex"
-# The volume root is mounted at /home/tau inside the guest, so the guest
-# path /home/tau/.tau/credentials.json is this volume-root-relative file.
-VOLUME_CREDENTIAL_PATH = "/.tau/credentials.json"
+CREDENTIAL_PROVIDER = "openai"
+# The volume root is mounted at /home/opencode inside the guest, so the
+# guest path /home/opencode/.local/share/opencode/auth.json is this
+# volume-root-relative file.
+VOLUME_CREDENTIAL_PATH = "/.local/share/opencode/auth.json"
 
 _UPPER_TO_LOWER = bytes.maketrans(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz"
 )
-_VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,233}\Z")
+_VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,228}\Z")
 
 
 class OAuthError(RuntimeError):
@@ -130,14 +134,15 @@ def volume_name_for(project_path: str) -> str:
 
     realpath of the project path, basename (kept raw when it is a legal
     volume name, sanitized otherwise), and the first 8 hex chars of the
-    SHA-256 of the realpath plus echo's trailing newline.
+    SHA-256 of the realpath plus echo's trailing newline. The legality
+    bound mirrors run.sh's VOLUME_NAME_RE (228 characters).
     """
     real = os.path.realpath(project_path)
     basename = os.path.basename(real)
     digest = hashlib.sha256((real + "\n").encode("utf-8", "surrogateescape")).hexdigest()[:8]
     if not _VOLUME_NAME_RE.match(basename):
         basename = sanitize_project_name(basename)
-    return f"tau-persist-{basename}-{digest}"
+    return f"opencode-persist-{basename}-{digest}"
 
 
 # --- Vendored OpenAI Codex OAuth flow ---
@@ -151,8 +156,8 @@ def create_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def create_openai_codex_authorization_flow(*, originator: str = "tau") -> AuthorizationFlow:
-    """Create the authorization URL with the fork's client id, scope, and
+def create_openai_codex_authorization_flow(*, originator: str = "opencode") -> AuthorizationFlow:
+    """Create the authorization URL with opencode's client id, scope, and
     params, plus a fresh PKCE pair and state."""
     verifier, challenge = create_pkce_pair()
     state = secrets.token_hex(16)
@@ -218,29 +223,67 @@ def code_from_paste(text: str, expected_state: str) -> str:
     return parsed.code
 
 
-def account_id_from_access_token(access_token: str) -> str | None:
-    """Extract the ChatGPT account id from an OpenAI Codex access JWT."""
-    payload = _access_token_payload(access_token)
-    if payload is None:
-        return None
+def _account_id_from_claims(payload: dict) -> str | None:
+    """Extract the ChatGPT account id from token claims, opencode's order:
+    the top-level chatgpt_account_id claim, then the auth claim, then the
+    first organization id."""
+    account_id = payload.get("chatgpt_account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        return account_id.strip()
     auth = payload.get(OPENAI_CODEX_ACCOUNT_CLAIM)
-    if not isinstance(auth, dict):
-        return None
-    account_id = auth.get("chatgpt_account_id")
-    if not isinstance(account_id, str) or not account_id.strip():
-        return None
-    return account_id.strip()
+    if isinstance(auth, dict):
+        claimed = auth.get("chatgpt_account_id")
+        if isinstance(claimed, str) and claimed.strip():
+            return claimed.strip()
+    organizations = payload.get("organizations")
+    if isinstance(organizations, list) and organizations:
+        first = organizations[0]
+        if isinstance(first, dict):
+            org_id = first.get("id")
+            if isinstance(org_id, str) and org_id.strip():
+                return org_id.strip()
+    return None
 
 
-def _access_token_payload(access_token: str) -> dict | None:
+def _jwt_payload(token: str) -> dict | None:
     try:
-        parts = access_token.split(".")
+        parts = token.split(".")
         if len(parts) != 3:
             return None
         payload = json.loads(_base64url_decode(parts[1]).decode("utf-8"))
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def account_id_from_id_token(id_token: str) -> str | None:
+    """Extract the ChatGPT account id from an OpenAI id-token JWT."""
+    payload = _jwt_payload(id_token)
+    if payload is None:
+        return None
+    return _account_id_from_claims(payload)
+
+
+def account_id_from_access_token(access_token: str) -> str | None:
+    """Extract the ChatGPT account id from an OpenAI access JWT."""
+    payload = _access_token_payload(access_token)
+    if payload is None:
+        return None
+    return _account_id_from_claims(payload)
+
+
+def account_id_from_tokens(id_token: str | None, access_token: str) -> str | None:
+    """Resolve the account id as opencode does: id-token claims first,
+    then access-token claims."""
+    if id_token:
+        account_id = account_id_from_id_token(id_token)
+        if account_id is not None:
+            return account_id
+    return account_id_from_access_token(access_token)
+
+
+def _access_token_payload(access_token: str) -> dict | None:
+    return _jwt_payload(access_token)
 
 
 def _access_token_expiry(access_token: str) -> int | None:
@@ -255,8 +298,11 @@ def _access_token_expiry(access_token: str) -> int | None:
 
 def exchange_openai_codex_authorization_code(
     code: str, verifier: str
-) -> tuple[str, str, int]:
-    """Exchange the authorization code; return (access, refresh, expires_ms)."""
+) -> tuple[str, str, int, str | None]:
+    """Exchange the authorization code; return the (access, refresh,
+    expires_ms, id_token) tuple. The id token is optional: opencode reads
+    the account id from it when present and falls back to the access
+    token."""
     form = {
         "grant_type": "authorization_code",
         "client_id": OPENAI_CODEX_CLIENT_ID,
@@ -267,15 +313,18 @@ def exchange_openai_codex_authorization_code(
     raw = _post_token_form(form)
     access = _required_token_field(raw, "access_token")
     refresh = _required_token_field(raw, "refresh_token")
-    return access, refresh, _token_expiry(raw, access)
+    id_token = raw.get("id_token")
+    return access, refresh, _token_expiry(raw, access), id_token if isinstance(id_token, str) else None
 
 
 def exchange_and_account(code: str, verifier: str) -> tuple[str, str, int, str]:
     """Exchange the code and return (access, refresh, expires_ms, account_id)."""
-    access, refresh, expires = exchange_openai_codex_authorization_code(code, verifier)
-    account_id = account_id_from_access_token(access)
+    access, refresh, expires, id_token = exchange_openai_codex_authorization_code(
+        code, verifier
+    )
+    account_id = account_id_from_tokens(id_token, access)
     if account_id is None:
-        raise OAuthError("Failed to extract OpenAI account id from access token")
+        raise OAuthError("Failed to extract OpenAI account id from the token response")
     return access, refresh, expires, account_id
 
 
@@ -429,7 +478,7 @@ def _oauth_html(message: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
-    return f'<!doctype html><meta charset="utf-8"><title>Tau OAuth</title><p>{escaped}</p>'
+    return f'<!doctype html><meta charset="utf-8"><title>opencode OAuth</title><p>{escaped}</p>'
 
 
 def open_browser(url: str) -> bool:
@@ -443,20 +492,24 @@ def open_browser(url: str) -> bool:
 # --- Credential document and volume write ---
 
 
-def credential_json(access: str, refresh: str, expires: int, account_id: str) -> str:
-    """Serialize the credential document exactly as guest Tau writes and reads it.
+def credential_json(
+    access: str, refresh: str, expires: int, account_id: str | None
+) -> str:
+    """Serialize the credential document exactly as guest opencode reads it.
 
-    Mirrors FileCredentialStore._save: one "openai-codex" entry holding
-    type/access/refresh/expires/account_id, indent 2, sorted keys, and a
-    trailing newline. The flow's expires_ms value is written verbatim.
+    One "openai" entry in opencode's OAuth shape: type/access/refresh/
+    expires (epoch milliseconds, the flow's value verbatim) and accountId
+    when known, indent 2, sorted keys, and a trailing newline. opencode's
+    own writer omits accountId when it is unknown, so None omits the key.
     """
     credential = {
         "type": "oauth",
         "access": access,
         "refresh": refresh,
         "expires": expires,
-        "account_id": account_id,
     }
+    if account_id is not None:
+        credential["accountId"] = account_id
     return json.dumps({CREDENTIAL_PROVIDER: credential}, indent=2, sort_keys=True) + "\n"
 
 
@@ -520,16 +573,17 @@ def write_credential(volume_name: str, content: str) -> None:
     """Write the credential document into the project volume.
 
     Resolves the volume's host directory through the ``msb`` CLI,
-    creating a missing volume. The volume root is mounted at /home/tau
-    inside the guest, so the document lands at the guest path
-    ``<host_path>/.tau/credentials.json`` with mode 0600. Before
-    writing, plain-string API-key entries from the host credential file
-    (~/.tau/credentials.json, optional) are seeded into the document;
-    OAuth objects are never copied, and a project entry with the same
-    name always wins. The write is a read-merge-write: the stored file
-    keeps every entry that is not "openai-codex", a missing file starts
-    from the new document, and a stored file that is not a JSON object
-    fails without writing.
+    creating a missing volume. The volume root is mounted at
+    /home/opencode inside the guest, so the document lands at the guest
+    path ``<host_path>/.local/share/opencode/auth.json`` with mode 0600.
+    Before writing, host auth entries of opencode's ``api`` shape from
+    the host credential file (~/.local/share/opencode/auth.json,
+    optional) are seeded into the document; OAuth and well-known entries
+    are never copied, and a project entry with the same name always
+    wins. The write is a read-merge-write: the stored file keeps every
+    entry that is not "openai", a missing file starts from the new
+    document, and a stored file that is not a JSON object fails without
+    writing.
     """
     host_path = volume_host_path(volume_name)
     credential_file = host_path.joinpath(VOLUME_CREDENTIAL_PATH.lstrip("/"))
@@ -555,18 +609,19 @@ def write_credential(volume_name: str, content: str) -> None:
         print(f"Seeded {count} API {word} from host credentials: {names}", flush=True)
 
 
-def _load_host_api_keys() -> dict[str, str]:
-    """Plain-string entries from the host credential file, or {}.
+def _load_host_api_keys() -> dict[str, dict]:
+    """Host auth entries of opencode's ``api`` shape, or {}.
 
-    The host ~/.tau/credentials.json is optional under the per-project
-    design; a missing, unreadable, non-JSON, or non-object file yields
-    nothing, never an error. Only entries whose value is a plain string
-    are returned (Tau stores API keys as strings). OAuth credentials
-    (objects with type: oauth) are never returned: their refresh tokens
-    rotate, and copying one session into several projects
-    reintroduces the rotation race this per-project design fixes.
+    The host ~/.local/share/opencode/auth.json is optional under the
+    per-project design; a missing, unreadable, non-JSON, or non-object
+    file yields nothing, never an error. Only entries whose value is an
+    object with type "api" and a string "key" are returned (opencode's
+    Api schema). OAuth entries (objects with type "oauth") are never
+    returned: their refresh tokens rotate, and copying one session into
+    several projects reintroduces the rotation race this per-project
+    design fixes. Well-known entries are machine-issued and never copied.
     """
-    host_file = Path(os.path.expanduser("~/.tau/credentials.json"))
+    host_file = Path(os.path.expanduser("~/.local/share/opencode/auth.json"))
     try:
         raw = host_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -577,19 +632,22 @@ def _load_host_api_keys() -> dict[str, str]:
         return {}
     if not isinstance(stored, dict):
         return {}
-    return {
-        name: value
-        for name, value in stored.items()
-        if isinstance(value, str) and name != CREDENTIAL_PROVIDER
-    }
+    seeded: dict[str, dict] = {}
+    for name, value in stored.items():
+        if name == CREDENTIAL_PROVIDER or not isinstance(value, dict):
+            continue
+        if value.get("type") != "api" or not isinstance(value.get("key"), str):
+            continue
+        seeded[name] = dict(value)
+    return seeded
 
 
-def _seeded_host_api_keys(stored_text: str | None) -> dict[str, str]:
+def _seeded_host_api_keys(stored_text: str | None) -> dict[str, dict]:
     """Host API-key entries the volume does not already define.
 
     Existing project entries win: a name already present in the stored
     volume document is never seeded. The host file is optional and only
-    its plain-string entries count (see _load_host_api_keys).
+    its api-shape entries count (see _load_host_api_keys).
     """
     present: set[str] = set()
     if stored_text is not None:
@@ -605,16 +663,15 @@ def _seeded_host_api_keys(stored_text: str | None) -> dict[str, str]:
 
 
 def _merge_credential_document(
-    stored_text: str | None, new_document: str, seed_entries: dict[str, str] | None = None
+    stored_text: str | None, new_document: str, seed_entries: dict[str, dict] | None = None
 ) -> str:
     """Merge the new provider document plus seeded entries into the stored text.
 
-    Returns the merged document serialized exactly as the fork's
-    FileCredentialStore._save: indent 2, sorted keys, trailing newline.
-    A missing stored file (None) produces a document with the new
-    provider entry (plus any seeded entries). Raises OAuthError when the
-    stored text is not a JSON object so a corrupt file is never
-    overwritten.
+    Returns the merged document serialized in opencode's auth.json
+    style: indent 2, sorted keys, trailing newline. A missing stored
+    file (None) produces a document with the new provider entry (plus
+    any seeded entries). Raises OAuthError when the stored text is not a
+    JSON object so a corrupt file is never overwritten.
     """
     if stored_text is None:
         merged: dict = {}
@@ -682,7 +739,7 @@ def main(argv: list[str]) -> int:
     try:
         run_login(argv[1])
     except Exception as error:
-        print(f"tau-login-openai: {error}", file=sys.stderr)
+        print(f"opencode-login-openai: {error}", file=sys.stderr)
         return 1
     return 0
 

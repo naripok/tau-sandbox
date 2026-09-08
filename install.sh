@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Install the tau-agent sandbox.
+# Install the opencode-sandbox.
 # Checks prerequisites, builds the image and loads it into the microsandbox
 # cache, then prints the alias to add to your shellrc.
 
-IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
+IMAGE_NAME="${OPENCODE_SANDBOX_IMAGE:-opencode-agent-isolated}"
 IMAGE_REF="localhost/${IMAGE_NAME}:latest"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -31,7 +31,7 @@ info "msb is working ($(msb --version 2>/dev/null | head -1))"
 # podman (used to build the OCI image that msb runs)
 command -v podman >/dev/null 2>&1 || fail "podman not found. Install it first: https://podman.io/docs/installation"
 
-# python3 (runs the host login helper, lib/tau-login-openai)
+# python3 (runs the host login helper, lib/opencode-login-openai)
 command -v python3 >/dev/null 2>&1 || fail "python3 not found. Install Python 3.10+ and rerun."
 
 # KVM is required on Linux (hardware virtualization). macOS uses
@@ -44,15 +44,15 @@ fi
 msb doctor >/dev/null 2>&1 || warn "msb doctor reported host issues; solve them if sandboxes fail to boot."
 
 # --- Build + load image ---
-# TAU_IMAGE bypasses automatic image management; the reference must be
+# OPENCODE_SANDBOX_IMAGE bypasses automatic image management; the reference must be
 # loaded by the user (e.g. `make build`).
-if [ -n "${TAU_IMAGE:-}" ]; then
+if [ -n "${OPENCODE_SANDBOX_IMAGE:-}" ]; then
     if msb images -q | grep -qx "$IMAGE_REF"; then
         info "Image ${IMAGE_REF} is loaded."
     else
         warn "Image ${IMAGE_REF} is not in the microsandbox cache."
         warn "Load it with: make build  (podman build and msb load)"
-        warn "TAU_IMAGE bypasses automatic image management."
+        warn "OPENCODE_SANDBOX_IMAGE bypasses automatic image management."
     fi
 elif msb images -q | grep -qx "$IMAGE_REF"; then
     warn "Image ${IMAGE_REF} is already loaded. Rebuild with: make build"
@@ -72,8 +72,8 @@ fi
 # CLI.
 LOCAL_BIN="${HOME}/.local/bin"
 mkdir -p "$LOCAL_BIN"
-ln -sf "$SCRIPT_DIR/lib/tau-login-openai" "${LOCAL_BIN}/tau-login-openai"
-info "Installed tau-login-openai in ${LOCAL_BIN}."
+ln -sf "$SCRIPT_DIR/lib/opencode-login-openai" "${LOCAL_BIN}/opencode-login-openai"
+info "Installed opencode-login-openai in ${LOCAL_BIN}."
 
 # --- Done ---
 
@@ -84,16 +84,16 @@ echo "============================="
 echo ""
 echo " Add this alias to your ~/.bashrc (or ~/.zshrc):"
 echo ""
-echo "   alias tau-sandbox='${SCRIPT_DIR}/run.sh'"
+echo "   alias opencode-sandbox='${SCRIPT_DIR}/run.sh'"
 echo ""
 echo " Then use it from any project:"
 echo ""
 echo "   cd ~/Projects/my-project"
-echo "   tau-sandbox tau -p \"Review this codebase\""
+echo "   opencode-sandbox opencode run \"Review this codebase\""
 echo ""
 echo " Other commands:"
-echo "   tau-sandbox                       # interactive shell in sandbox"
-echo "   tau-sandbox tau                   # start the Tau TUI"
-echo "   tau-sandbox npm test              # run any command inside"
-echo "   tau-sandbox --reset               # wipe per-project home, sessions, and logs"
+echo "   opencode-sandbox                       # start the opencode TUI"
+echo "   opencode-sandbox bash                  # interactive shell in sandbox"
+echo "   opencode-sandbox npm test              # run any command inside"
+echo "   opencode-sandbox --reset               # wipe per-project home, sessions, and logs"
 echo ""

@@ -1,15 +1,15 @@
-"""Unit tests for lib/tau-login-openai.
+"""Unit tests for lib/opencode-login-openai.
 
 These tests prove the host helper derives the same per-project volume as
 run.sh, isolates projects from each other, writes the exact credential
-document guest Tau reads, seeds leftover host API keys into the volume
-without copying OAuth sessions, validates pasted redirect state, targets
-the credential write at the concrete host directory the msb CLI reports
-(the volume root, which the guest sees as /home/tau), and never puts
-token values on stdout or stderr. No browser, network, or microsandbox
-runtime is required: a fake ``msb`` executable on PATH backs ``volume
-inspect`` and ``volume create`` (as conftest does for run.sh), and the
-token exchange is stubbed.
+document guest opencode reads, seeds leftover host API-key entries into
+the volume without copying OAuth sessions, validates pasted redirect
+state, targets the credential write at the concrete host directory the
+msb CLI reports (the volume root, which the guest sees as /home/opencode),
+and never puts token values on stdout or stderr. No browser, network, or
+microsandbox runtime is required: a fake ``msb`` executable on PATH backs
+``volume inspect`` and ``volume create`` (as conftest does for run.sh),
+and the token exchange is stubbed.
 """
 import base64
 import importlib.util
@@ -24,7 +24,7 @@ from importlib.machinery import SourceFileLoader
 import pytest
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
-HELPER = REPO_ROOT / "lib" / "tau-login-openai"
+HELPER = REPO_ROOT / "lib" / "opencode-login-openai"
 
 def _run_sh_derivation_script() -> str:
     """Assemble a bash snippet from run.sh's own volume-derivation lines.
@@ -36,7 +36,7 @@ def _run_sh_derivation_script() -> str:
     """
     text = (REPO_ROOT / "run.sh").read_text(encoding="utf-8")
     start_marker = 'PROJECT_PATH="$(realpath "$(pwd)")' + '"'
-    end_marker = 'PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-${PROJECT_HASH}"'
+    end_marker = 'PERSIST_VOLUME="opencode-persist-${PROJECT_NAME}-${PROJECT_HASH}"'
     try:
         start = text.index(start_marker)
         end = text.index("\n", text.index(end_marker)) + 1
@@ -63,7 +63,7 @@ def _jwt(payload=None):
 
 
 FAKE_MSB = """#!/bin/bash
-# Fake msb CLI for tau-login-openai tests: volume inspect/create backed
+# Fake msb CLI for opencode-login-openai tests: volume inspect/create backed
 # by a real temp root of named volume directories.
 #   MSB_VOLUME_ROOT          directory holding the fake volumes
 #   MSB_VOLUME_LOG           path that records every volume create call
@@ -127,16 +127,16 @@ def _install_fake_msb(monkeypatch, tmp_path, volume_root):
 
 @pytest.fixture
 def helper():
-    """Import lib/tau-login-openai fresh per test, without running its CLI."""
-    loader = SourceFileLoader("tau_login_openai", str(HELPER))
-    spec = importlib.util.spec_from_loader("tau_login_openai", loader)
+    """Import lib/opencode-login-openai fresh per test, without running its CLI."""
+    loader = SourceFileLoader("opencode_login_openai", str(HELPER))
+    spec = importlib.util.spec_from_loader("opencode_login_openai", loader)
     module = importlib.util.module_from_spec(spec)
     # Slotted dataclasses resolve their module's __dict__ through sys.modules.
-    sys.modules["tau_login_openai"] = module
+    sys.modules["opencode_login_openai"] = module
     try:
         loader.exec_module(module)
     finally:
-        del sys.modules["tau_login_openai"]
+        del sys.modules["opencode_login_openai"]
     return module
 
 
@@ -144,16 +144,17 @@ def helper():
 def _isolate_host_home(monkeypatch, tmp_path):
     """Point HOME at an empty directory for every test.
 
-    The helper seeds API keys from ~/.tau/credentials.json; pointing HOME
-    at an empty test directory keeps the real host file out of every
-    test and gives the seed tests a place to install a fake host file.
+    The helper seeds API-key entries from
+    ~/.local/share/opencode/auth.json; pointing HOME at an empty test
+    directory keeps the real host file out of every test and gives the
+    seed tests a place to install a fake host file.
     """
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
 def _fake_host_credentials(tmp_path, text: str):
-    """Write raw text to the fake host ~/.tau/credentials.json."""
-    creds = tmp_path / "home" / ".tau" / "credentials.json"
+    """Write raw text to the fake host ~/.local/share/opencode/auth.json."""
+    creds = tmp_path / "home" / ".local" / "share" / "opencode" / "auth.json"
     creds.parent.mkdir(parents=True, exist_ok=True)
     creds.write_text(text, encoding="utf-8")
     return creds
@@ -194,13 +195,15 @@ def test_distinct_projects_get_distinct_volume_names(tmp_path, helper):
     assert helper.volume_name_for(str(first)) != helper.volume_name_for(str(second))
 
 
-# --- Credential document shape matches guest Tau ---
+# --- Credential document shape matches guest opencode ---
 
 
-def test_credential_json_matches_guest_tau_shape(helper):
-    """The document parses to the exact provider object guest Tau reads:
-    type/access/refresh/expires(int)/account_id, indent 2, sorted keys,
-    trailing newline."""
+def test_credential_json_matches_guest_opencode_shape(helper):
+    """The document parses to the exact provider object guest opencode
+    reads: opencode's openai OAuth entry with type/access/refresh/expires
+    (epoch milliseconds)/accountId, indent 2, sorted keys, trailing
+    newline. A None account id omits the accountId key, as opencode's
+    own writer does."""
     doc = helper.credential_json(
         access="access-token-value",
         refresh="refresh-token-value",
@@ -209,9 +212,9 @@ def test_credential_json_matches_guest_tau_shape(helper):
     )
     expected = (
         "{\n"
-        '  "openai-codex": {\n'
+        '  "openai": {\n'
         '    "access": "access-token-value",\n'
-        '    "account_id": "acct_123",\n'
+        '    "accountId": "acct_123",\n'
         '    "expires": 1758908400123,\n'
         '    "refresh": "refresh-token-value",\n'
         '    "type": "oauth"\n'
@@ -220,14 +223,17 @@ def test_credential_json_matches_guest_tau_shape(helper):
     )
     assert doc == expected
     data = json.loads(doc)
-    assert set(data) == {"openai-codex"}
-    credential = data["openai-codex"]
+    assert set(data) == {"openai"}
+    credential = data["openai"]
     assert credential["type"] == "oauth"
     assert credential["access"] == "access-token-value"
     assert credential["refresh"] == "refresh-token-value"
     assert isinstance(credential["expires"], int)
     assert credential["expires"] == 1_758_908_400_123
-    assert credential["account_id"] == "acct_123"
+    assert credential["accountId"] == "acct_123"
+    assert "accountId" not in json.loads(
+        helper.credential_json("a", "r", 1, None)
+    )["openai"]
 
 
 # --- Paste validation ---
@@ -269,17 +275,17 @@ def test_parse_authorization_input_accepts_redirect_forms(helper):
 def _volume_credential_file(volume_root, volume_name):
     """The host path the helper writes inside the named volume.
 
-    The volume root is mounted at /home/tau in the guest, so the guest
-    path /home/tau/.tau/credentials.json is this volume-root-relative
-    file.
+    The volume root is mounted at /home/opencode in the guest, so the
+    guest path /home/opencode/.local/share/opencode/auth.json is this
+    volume-root-relative file.
     """
-    return volume_root / volume_name / ".tau" / "credentials.json"
+    return volume_root / volume_name / ".local" / "share" / "opencode" / "auth.json"
 
 
 def test_volume_host_path_creates_missing_volume_and_resolves(helper, monkeypatch, tmp_path):
     """volume_host_path creates a missing volume through msb and parses
     the Path: line into the volume's host directory."""
-    volume = "tau-persist-proj-12345678"
+    volume = "opencode-persist-proj-12345678"
     volume_root = tmp_path / "volumes"
     create_log = _install_fake_msb(monkeypatch, tmp_path, volume_root)
 
@@ -293,8 +299,8 @@ def test_write_credential_creates_missing_volume_and_writes_at_volume_root(
     helper, monkeypatch, tmp_path
 ):
     """A missing volume is created through msb first; the document lands
-    at <host_path>/.tau/credentials.json — the volume-root file the guest
-    reads at /home/tau/.tau/credentials.json."""
+    at <host_path>/.local/share/opencode/auth.json — the volume-root file
+    the guest reads at /home/opencode/.local/share/opencode/auth.json."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
@@ -314,10 +320,11 @@ def test_write_credential_creates_missing_volume_and_writes_at_volume_root(
 def test_write_credential_lands_at_guest_visible_path_not_nested_home(
     helper, monkeypatch, tmp_path
 ):
-    """Regression: the file lands at <host_path>/.tau/credentials.json —
-    the exact file guest Tau reads at /home/tau/.tau/credentials.json,
-    since run.sh mounts the volume at /home/tau — and never inside a
-    nested <host_path>/home/tau/... directory in the volume."""
+    """Regression: the file lands at
+    <host_path>/.local/share/opencode/auth.json — the exact file guest
+    opencode reads at /home/opencode/.local/share/opencode/auth.json,
+    since run.sh mounts the volume at /home/opencode — and never inside
+    a nested <host_path>/home/opencode/... directory in the volume."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
@@ -329,9 +336,12 @@ def test_write_credential_lands_at_guest_visible_path_not_nested_home(
 
     helper.write_credential(volume, content)
 
-    expected = volume_root / volume / ".tau" / "credentials.json"
+    expected = volume_root / volume / ".local" / "share" / "opencode" / "auth.json"
     assert expected.read_text(encoding="utf-8") == content
-    nested = volume_root / volume / "home" / "tau" / ".tau" / "credentials.json"
+    nested = (
+        volume_root / volume / "home" / "opencode" / ".local"
+        / "share" / "opencode" / "auth.json"
+    )
     assert not nested.exists()
     assert not (volume_root / volume / "home").exists()
 
@@ -376,20 +386,20 @@ def test_write_credential_writes_mode_0600(helper, monkeypatch, tmp_path):
 
 
 def test_write_credential_seeds_host_api_keys_not_oauth(helper, monkeypatch, tmp_path, capsys):
-    """Host API keys (plain strings) are seeded into the volume document;
-    OAuth object entries are never copied; the seed line lists the seeded
-    entry names only, never their values."""
+    """Host API-key entries (opencode's api shape) are seeded into the
+    volume document; OAuth object entries are never copied; the seed line
+    lists the seeded entry names only, never their values."""
     _fake_host_credentials(
         tmp_path,
         json.dumps(
             {
-                "openrouter": "sk-or-host-42",
+                "openrouter": {"type": "api", "key": "sk-or-host-42"},
                 "anthropic": {
                     "type": "oauth",
                     "access": "host-oauth-access",
                     "refresh": "host-oauth-refresh",
                     "expires": 1,
-                    "account_id": "host-acct",
+                    "accountId": "host-acct",
                 },
             }
         ),
@@ -408,9 +418,9 @@ def test_write_credential_seeds_host_api_keys_not_oauth(helper, monkeypatch, tmp
     stored = json.loads(
         _volume_credential_file(volume_root, volume).read_text(encoding="utf-8")
     )
-    assert stored["openrouter"] == "sk-or-host-42"
+    assert stored["openrouter"] == {"type": "api", "key": "sk-or-host-42"}
     assert "anthropic" not in stored
-    assert set(stored) == {"openai-codex", "openrouter"}
+    assert set(stored) == {"openai", "openrouter"}
     out = capsys.readouterr().out
     assert "Seeded 1 API key from host credentials: openrouter" in out
     for secret in ("sk-or-host-42", "host-oauth-access", "host-oauth-refresh"):
@@ -423,7 +433,7 @@ def test_write_credential_existing_project_entry_wins_over_host(
     """A project's own entry always wins: a same-named host API key is
     neither copied into the volume nor named in the seed output."""
     _fake_host_credentials(
-        tmp_path, json.dumps({"openrouter": "sk-or-host-42"})
+        tmp_path, json.dumps({"openrouter": {"type": "api", "key": "sk-or-host-42"}})
     )
     project = tmp_path / "proj"
     project.mkdir()
@@ -433,7 +443,8 @@ def test_write_credential_existing_project_entry_wins_over_host(
     credential_file = _volume_credential_file(volume_root, volume)
     credential_file.parent.mkdir(parents=True, exist_ok=True)
     credential_file.write_text(
-        json.dumps({"openrouter": "sk-or-project-7"}), encoding="utf-8"
+        json.dumps({"openrouter": {"type": "api", "key": "sk-or-project-7"}}),
+        encoding="utf-8",
     )
 
     helper.write_credential(
@@ -441,7 +452,7 @@ def test_write_credential_existing_project_entry_wins_over_host(
     )
 
     stored = json.loads(credential_file.read_text(encoding="utf-8"))
-    assert stored["openrouter"] == "sk-or-project-7"
+    assert stored["openrouter"] == {"type": "api", "key": "sk-or-project-7"}
     out = capsys.readouterr().out
     assert "Seeded" not in out
     assert "sk-or-host-42" not in out
@@ -466,7 +477,7 @@ def test_write_credential_without_host_file_seeds_nothing(
 
     credential_file = _volume_credential_file(volume_root, volume)
     assert credential_file.read_text(encoding="utf-8") == new_doc
-    assert set(json.loads(credential_file.read_text(encoding="utf-8"))) == {"openai-codex"}
+    assert set(json.loads(credential_file.read_text(encoding="utf-8"))) == {"openai"}
     assert "Seeded" not in capsys.readouterr().out
 
 
@@ -540,9 +551,9 @@ def test_volume_name_regex_requires_true_end_of_name(helper):
 
 
 def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
-    """A stored document keeps every non-openai-codex entry; the
-    openai-codex entry is replaced and the merged document is serialized
-    byte-identically to the fork's FileCredentialStore._save."""
+    """A stored document keeps every non-openai entry; the openai entry is
+    replaced and the merged document is serialized in opencode's auth.json
+    style (indent 2, sorted keys, trailing newline)."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
@@ -551,13 +562,13 @@ def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
     credential_file = _volume_credential_file(volume_root, volume)
     credential_file.parent.mkdir(parents=True)
     stored = {
-        "anthropic-key": "sk-ant-42",
-        "openai-codex": {
+        "anthropic-key": {"type": "api", "key": "sk-ant-42"},
+        "openai": {
             "type": "oauth",
             "access": "old-access",
             "refresh": "old-refresh",
             "expires": 1,
-            "account_id": "old-acct",
+            "accountId": "old-acct",
         },
     }
     credential_file.write_text(json.dumps(stored), encoding="utf-8")
@@ -568,10 +579,13 @@ def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
 
     expected = (
         "{\n"
-        '  "anthropic-key": "sk-ant-42",\n'
-        '  "openai-codex": {\n'
+        '  "anthropic-key": {\n'
+        '    "key": "sk-ant-42",\n'
+        '    "type": "api"\n'
+        "  },\n"
+        '  "openai": {\n'
         '    "access": "new-access",\n'
-        '    "account_id": "new-acct",\n'
+        '    "accountId": "new-acct",\n'
         '    "expires": 2,\n'
         '    "refresh": "new-refresh",\n'
         '    "type": "oauth"\n'
@@ -584,8 +598,8 @@ def test_write_merges_into_existing_credentials(helper, monkeypatch, tmp_path):
 def test_write_without_existing_file_produces_single_entry_document(
     helper, monkeypatch, tmp_path
 ):
-    """A missing credentials.json yields exactly the new single-entry
-    document; no other entry appears."""
+    """A missing auth.json yields exactly the new single-entry document;
+    no other entry appears."""
     project = tmp_path / "proj"
     project.mkdir()
     volume = helper.volume_name_for(str(project))
@@ -600,7 +614,7 @@ def test_write_without_existing_file_produces_single_entry_document(
 
     credential_file = _volume_credential_file(volume_root, volume)
     assert credential_file.read_text(encoding="utf-8") == new_doc
-    assert set(json.loads(credential_file.read_text(encoding="utf-8"))) == {"openai-codex"}
+    assert set(json.loads(credential_file.read_text(encoding="utf-8"))) == {"openai"}
 
 
 def test_write_corrupt_credentials_file_fails_without_writing(
@@ -640,12 +654,12 @@ def _stub_login(helper, monkeypatch, tmp_path, written, server):
     monkeypatch.setattr(
         helper,
         "exchange_openai_codex_authorization_code",
-        lambda code, verifier: (_jwt(), "refresh-token-xyz", 1_758_908_400_123),
+        lambda code, verifier: (_jwt(), "refresh-token-xyz", 1_758_908_400_123, None),
     )
 
     def fake_write_credential(_volume_name, content):
-        # Volume-root-relative guest path; the volume is mounted at /home/tau.
-        written.append((".tau/credentials.json", content.encode("utf-8")))
+        # Volume-root-relative guest path; the volume is mounted at /home/opencode.
+        written.append((".local/share/opencode/auth.json", content.encode("utf-8")))
 
     monkeypatch.setattr(helper, "write_credential", fake_write_credential)
     return project, flow
@@ -677,10 +691,10 @@ def test_browser_login_output_contains_no_tokens(helper, monkeypatch, tmp_path, 
         assert secret not in out.err
 
     assert server.closed
-    assert written[-1][0] == ".tau/credentials.json"
-    credential = json.loads(written[-1][1])["openai-codex"]
+    assert written[-1][0] == ".local/share/opencode/auth.json"
+    credential = json.loads(written[-1][1])["openai"]
     assert credential["refresh"] == "refresh-token-xyz"
-    assert credential["account_id"] == "acct_42"
+    assert credential["accountId"] == "acct_42"
 
 
 def test_paste_login_output_contains_no_tokens(helper, monkeypatch, tmp_path, capsys):
@@ -699,8 +713,8 @@ def test_paste_login_output_contains_no_tokens(helper, monkeypatch, tmp_path, ca
         assert secret not in out.out
         assert secret not in out.err
 
-    assert written[-1][0] == ".tau/credentials.json"
-    credential = json.loads(written[-1][1])["openai-codex"]
+    assert written[-1][0] == ".local/share/opencode/auth.json"
+    credential = json.loads(written[-1][1])["openai"]
     assert credential["refresh"] == "refresh-token-xyz"
 
 
@@ -722,12 +736,13 @@ def test_paste_login_rejects_mismatched_state(helper, monkeypatch, tmp_path, cap
 
 def test_exchange_and_account_returns_tuple_with_account_id(helper, monkeypatch):
     """The full exchange path yields (access, refresh, expires_ms,
-    account_id) with the account id read from the access JWT."""
+    account_id); with no id token the account id is read from the access
+    JWT, and an id token takes precedence exactly as opencode extracts it."""
     jwt = _jwt({"exp": 1893456000, "https://api.openai.com/auth": {"chatgpt_account_id": "acct_789"}})
     monkeypatch.setattr(
         helper,
         "exchange_openai_codex_authorization_code",
-        lambda code, verifier: (jwt, "refresh-token", 1_758_908_400_123),
+        lambda code, verifier: (jwt, "refresh-token", 1_758_908_400_123, None),
     )
     assert helper.exchange_and_account("code", "verifier") == (
         jwt,
@@ -736,6 +751,14 @@ def test_exchange_and_account_returns_tuple_with_account_id(helper, monkeypatch)
         "acct_789",
     )
     assert helper.account_id_from_access_token("not-a-jwt") is None
+    id_jwt = _jwt({"chatgpt_account_id": "acct_from_id_token"})
+    monkeypatch.setattr(
+        helper,
+        "exchange_openai_codex_authorization_code",
+        lambda code, verifier: (jwt, "refresh-token", 1_758_908_400_123, id_jwt),
+    )
+    assert helper.exchange_and_account("code", "verifier")[3] == "acct_from_id_token"
+    assert helper.account_id_from_tokens(None, jwt) == "acct_789"
 
 
 # --- CLI failure contract ---
@@ -747,11 +770,11 @@ def test_failure_exits_nonzero_with_stderr_message(helper, monkeypatch, capsys):
         raise helper.OAuthError("authorization rejected")
 
     monkeypatch.setattr(helper, "run_login", boom)
-    assert helper.main(["tau-login-openai", "/some/project"]) == 1
+    assert helper.main(["opencode-login-openai", "/some/project"]) == 1
     assert "authorization rejected" in capsys.readouterr().err
 
 
 def test_usage_error_exits_nonzero_with_stderr_message(helper, capsys):
     """Missing the project argument exits non-zero and explains usage."""
-    assert helper.main(["tau-login-openai"]) == 2
+    assert helper.main(["opencode-login-openai"]) == 2
     assert "Usage" in capsys.readouterr().err
