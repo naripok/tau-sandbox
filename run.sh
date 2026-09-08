@@ -1,28 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
-# Launch the Tau agent sandbox: a hardware-isolated microsandbox microVM.
+# Launch the opencode agent sandbox: a hardware-isolated microsandbox microVM.
 # The VM is ephemeral; durable home, session, and log state lives in isolated
 # per-project named volumes.
 
 # --- Configuration (host side) ---
-# TAU_IMAGE: full image reference passed to msb (bypasses .tau-packages).
-# TAU_CONFIG_DIR: host resources exposed read-only for startup synchronization
-# sources; credentials stay per-project and are never mounted. TAU_AGENTS_DIR
-# remains read-only at its normal sandbox-home path.
-# TAU_ENV_FILE: env file whose variables are forwarded into the VM.
-IMAGE_NAME="${TAU_IMAGE:-tau-agent-isolated}"
-# Project-local config discovery: when TAU_CONFIG_DIR is unset, the nearest
-# ancestor of the launch directory whose `.tau` entry is a directory (a real
-# per-project config or a symlink to one) supplies the config directory. This
-# mirrors the .tau-packages project-local convention. TAU_CONFIG_DIR always
-# wins; without a match the default (~/.tau) applies.
-CONFIG_DIR="${TAU_CONFIG_DIR:-}"
+# OPENCODE_SANDBOX_IMAGE: full image reference passed to msb (bypasses
+# .opencode-packages).
+# OPENCODE_SANDBOX_CONFIG_DIR: host resources exposed read-only for startup
+# synchronization sources; credentials stay per-project and are never mounted.
+# OPENCODE_SANDBOX_ENV_FILE: env file whose variables are forwarded into the VM.
+IMAGE_NAME="${OPENCODE_SANDBOX_IMAGE:-opencode-agent-isolated}"
+# Project-local config discovery: when OPENCODE_SANDBOX_CONFIG_DIR is unset,
+# the nearest ancestor of the launch directory whose `.opencode` entry is a
+# directory (a real per-project config or a symlink to one) supplies the
+# config directory. This mirrors the .opencode-packages project-local
+# convention. OPENCODE_SANDBOX_CONFIG_DIR always wins; without a match the
+# default (${XDG_CONFIG_HOME:-~/.config}/opencode) applies.
+CONFIG_DIR="${OPENCODE_SANDBOX_CONFIG_DIR:-}"
 if [ -z "$CONFIG_DIR" ]; then
     probe_dir="$(pwd)"
     while :; do
-        if [ -d "$probe_dir/.tau" ]; then
-            CONFIG_DIR="$probe_dir/.tau"
+        if [ -d "$probe_dir/.opencode" ]; then
+            CONFIG_DIR="$probe_dir/.opencode"
             break
         fi
         parent="$(dirname "$probe_dir")"
@@ -30,31 +31,28 @@ if [ -z "$CONFIG_DIR" ]; then
         probe_dir="$parent"
     done
 fi
-CONFIG_DIR="${CONFIG_DIR:-${HOME}/.tau}"
-AGENTS_DIR="${TAU_AGENTS_DIR:-${HOME}/.agents}"
-ENV_FILE="${TAU_ENV_FILE:-${HOME}/.env}"
-# Resolve a caller-supplied relative TAU_ENV_FILE against the launch
+CONFIG_DIR="${CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/opencode}"
+ENV_FILE="${OPENCODE_SANDBOX_ENV_FILE:-${HOME}/.env}"
+# Resolve a caller-supplied relative OPENCODE_SANDBOX_ENV_FILE against the launch
 # directory before any use: slash-less relative names must resolve from
 # the launch directory, not from PATH or the eventual working directory.
 case "$ENV_FILE" in
     /*) ;;
     *) ENV_FILE="$(pwd)/$ENV_FILE" ;;
 esac
-CPUS="${TAU_CPUS:-4}"
-MEM="${TAU_MEM:-8G}"
-PIDS="${TAU_PIDS:-1024}"
-# TAU_LAN_HOSTS: comma-separated exact-IP egress exceptions to the public
+CPUS="${OPENCODE_SANDBOX_CPUS:-4}"
+MEM="${OPENCODE_SANDBOX_MEM:-8G}"
+PIDS="${OPENCODE_SANDBOX_PIDS:-1024}"
+# OPENCODE_SANDBOX_LAN_HOSTS: comma-separated exact-IP egress exceptions to the public
 # network profile; empty (default) keeps every private address denied.
-LAN_HOSTS="${TAU_LAN_HOSTS:-}"
+LAN_HOSTS="${OPENCODE_SANDBOX_LAN_HOSTS:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Raw lexical exposure sources, captured before the canonicalization below:
 # the project-secrets library resolves physical identities itself, and the
 # captured bootstrap entry list must reflect exactly the entries the launch
 # will snapshot.
 RAW_CONFIG_DIR="$CONFIG_DIR"
-RAW_AGENTS_DIR="$AGENTS_DIR"
 [ -d "$CONFIG_DIR" ] && CONFIG_DIR="$(realpath "$CONFIG_DIR")"
-[ -d "$AGENTS_DIR" ] && AGENTS_DIR="$(realpath "$AGENTS_DIR")"
 
 # Derive persistent volume names from the project path.
 # The basename makes "msb volume ls" output meaningful.
@@ -79,13 +77,13 @@ sanitize_project_name() {
     printf '%s' "$out"
 }
 
-# Volume names must be legal msb volume names: [A-Za-z0-9._-] (the tau-*
+# Volume names must be legal msb volume names: [A-Za-z0-9._-] (the opencode-*
 # prefix supplies the required alphanumeric start) and short enough for a
 # 255-byte path component in the microsandbox volume store (longest prefix
-# "tau-sessions-" plus the 8-char hash leaves 233). Keep the raw basename
-# when legal so existing per-project volumes stay put; sanitize otherwise —
-# such projects could never have launched.
-VOLUME_NAME_RE='^[A-Za-z0-9._-]{1,233}$'
+# "opencode-sessions-" plus the 8-char hash leaves 228 after the margin).
+# Keep the raw basename when legal so existing per-project volumes stay put;
+# sanitize otherwise — such projects could never have launched.
+VOLUME_NAME_RE='^[A-Za-z0-9._-]{1,228}$'
 if [[ ! "$PROJECT_NAME" =~ $VOLUME_NAME_RE ]]; then
     PROJECT_NAME="$(sanitize_project_name "$PROJECT_NAME")"
 fi
@@ -96,15 +94,15 @@ fi
 # basename when the derived name is legal so existing per-project images
 # stay put; sanitize otherwise.
 IMAGE_PROJECT_NAME="$PROJECT_NAME"
-IMAGE_NAME_PROBE="tau-agent-isolated-${IMAGE_PROJECT_NAME}-00000000-00000000"
+IMAGE_NAME_PROBE="opencode-agent-isolated-${IMAGE_PROJECT_NAME}-00000000-00000000"
 IMAGE_NAME_RE='^[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$'
 if [[ ! "$IMAGE_NAME_PROBE" =~ $IMAGE_NAME_RE ]] || [ "${#IMAGE_NAME_PROBE}" -gt 255 ]; then
     IMAGE_PROJECT_NAME="$(sanitize_project_name "$PROJECT_NAME")"
 fi
 
-PERSIST_VOLUME="tau-persist-${PROJECT_NAME}-${PROJECT_HASH}"
-SESSIONS_VOLUME="tau-sessions-${PROJECT_NAME}-${PROJECT_HASH}"
-LOGS_VOLUME="tau-logs-${PROJECT_NAME}-${PROJECT_HASH}"
+PERSIST_VOLUME="opencode-persist-${PROJECT_NAME}-${PROJECT_HASH}"
+SESSIONS_VOLUME="opencode-sessions-${PROJECT_NAME}-${PROJECT_HASH}"
+LOGS_VOLUME="opencode-logs-${PROJECT_NAME}-${PROJECT_HASH}"
 
 # Handle --reset flag: remove all per-project volumes and exit. This runs
 # before any project-secret discovery, so a reset performs no secret work
@@ -138,10 +136,10 @@ MSB_BIN="msb"
 
 # --- Per-project package handling ---
 # Must be AFTER the --reset handler so `run.sh --reset` works even with an
-# invalid .tau-packages file.
+# invalid .opencode-packages file.
 
 parse_packages() {
-    # Parse .tau-packages: strip whitespace and CRLF, skip comments/blanks.
+    # Parse .opencode-packages: strip whitespace and CRLF, skip comments/blanks.
     # Output: space-separated package list on stdout.
     local file="$1"
     if [ ! -f "$file" ]; then
@@ -156,7 +154,7 @@ parse_packages() {
 }
 
 validate_packages() {
-    # Reject .tau-packages lines containing shell metacharacters.
+    # Reject .opencode-packages lines containing shell metacharacters.
     # Returns 1 and prints an error if dangerous characters are found.
     local file="$1"
     if [ ! -f "$file" ]; then
@@ -169,7 +167,7 @@ validate_packages() {
         { grep -v '^$' || true; } | \
         grep -n '[;|$\`&><*?~\\!]' || true)
     if [ -n "$invalid_line" ]; then
-        echo "Error: .tau-packages contains dangerous characters:" >&2
+        echo "Error: .opencode-packages contains dangerous characters:" >&2
         echo "$invalid_line" >&2
         echo "Only alphanumeric characters, hyphens, dots, and underscores are allowed." >&2
         return 1
@@ -178,7 +176,7 @@ validate_packages() {
 }
 
 compute_hash() {
-    # Deterministic hash of .tau-packages raw bytes (first 8 hex chars).
+    # Deterministic hash of .opencode-packages raw bytes (first 8 hex chars).
     local file="$1"
     if [ ! -f "$file" ]; then
         echo ""
@@ -213,15 +211,15 @@ prune_superseded_package_images() {
     # Cache hygiene after a package-image build: remove the images this build
     # supersedes — the legacy single-hash tag of the current package content
     # and any older base version of it. Images tagged with any other package
-    # hash (same-image-name projects, earlier .tau-packages contents) are
+    # hash (same-image-name projects, earlier .opencode-packages contents) are
     # never removed. Failed removals are tolerated: pruning never blocks the
     # launch.
     local hex8='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
     local cached_ref
     while IFS= read -r cached_ref; do
         case "$cached_ref" in
-            "localhost/tau-agent-isolated-${IMAGE_PROJECT_NAME}-${PKG_HASH}:latest" | \
-            "localhost/tau-agent-isolated-${IMAGE_PROJECT_NAME}-"${hex8}"-${PKG_HASH}:latest")
+            "localhost/opencode-agent-isolated-${IMAGE_PROJECT_NAME}-${PKG_HASH}:latest" | \
+            "localhost/opencode-agent-isolated-${IMAGE_PROJECT_NAME}-"${hex8}"-${PKG_HASH}:latest")
                 [ "$cached_ref" = "$IMAGE_REF" ] && continue
                 "$MSB_BIN" rmi "$cached_ref" >/dev/null 2>&1 || true
                 ;;
@@ -230,31 +228,31 @@ prune_superseded_package_images() {
 }
 
 # Image reference resolution.
-# TAU_IMAGE overrides everything: the reference is passed to msb verbatim
-# and image management (build/load) is skipped entirely — the user manages
-# that image externally (e.g. `make build`). Otherwise, use per-project
-# naming when .tau-packages lists packages, else the shared base image.
-# Per-project names embed a hash of the base inputs (Containerfile and
-# config/), so base updates invalidate the tag and trigger the approval-
-# gated rebuild on the next run.
-if [ -n "${TAU_IMAGE:-}" ]; then
-    IMAGE_REF="$TAU_IMAGE"
+# OPENCODE_SANDBOX_IMAGE overrides everything: the reference is passed to msb
+# verbatim and image management (build/load) is skipped entirely — the user
+# manages that image externally (e.g. `make build`). Otherwise, use
+# per-project naming when .opencode-packages lists packages, else the shared
+# base image. Per-project names embed a hash of the base inputs
+# (Containerfile and config/), so base updates invalidate the tag and
+# trigger the approval-gated rebuild on the next run.
+if [ -n "${OPENCODE_SANDBOX_IMAGE:-}" ]; then
+    IMAGE_REF="$OPENCODE_SANDBOX_IMAGE"
     HAS_PACKAGES=0
     SKIP_IMAGE_CHECK=1
 else
     EXTRA_PACKAGES=""
     HAS_PACKAGES=0
-    if [ -f ".tau-packages" ]; then
-        validate_packages ".tau-packages" || exit 1
-        EXTRA_PACKAGES=$(parse_packages ".tau-packages")
+    if [ -f ".opencode-packages" ]; then
+        validate_packages ".opencode-packages" || exit 1
+        EXTRA_PACKAGES=$(parse_packages ".opencode-packages")
         if [ -n "$(echo "$EXTRA_PACKAGES" | tr -d '[:space:]')" ]; then
             HAS_PACKAGES=1
         fi
     fi
     if [ "$HAS_PACKAGES" -eq 1 ]; then
-        PKG_HASH=$(compute_hash ".tau-packages")
+        PKG_HASH=$(compute_hash ".opencode-packages")
         BASE_HASH=$(compute_base_hash)
-        IMAGE_NAME="tau-agent-isolated-${IMAGE_PROJECT_NAME}-${BASE_HASH}-${PKG_HASH}"
+        IMAGE_NAME="opencode-agent-isolated-${IMAGE_PROJECT_NAME}-${BASE_HASH}-${PKG_HASH}"
     fi
     IMAGE_REF="localhost/${IMAGE_NAME}:latest"
 fi
@@ -275,8 +273,8 @@ if [ "${SKIP_IMAGE_CHECK:-0}" != "1" ] && ! "$MSB_BIN" images -q | grep -qx "$IM
         fi
     elif [ "$HAS_PACKAGES" -eq 1 ]; then
         echo "" >&2
-        echo "Error: .tau-packages requires an image rebuild but stdin is not a terminal." >&2
-        echo "Run interactively or set TAU_IMAGE to bypass." >&2
+        echo "Error: .opencode-packages requires an image rebuild but stdin is not a terminal." >&2
+        echo "Run interactively or set OPENCODE_SANDBOX_IMAGE to bypass." >&2
         exit 1
     fi
 
@@ -295,7 +293,7 @@ if [ "${SKIP_IMAGE_CHECK:-0}" != "1" ] && ! "$MSB_BIN" images -q | grep -qx "$IM
 fi
 
 # --- Environment forwarding ---
-# Forward variables defined in the env file, mirroring pi-sandbox.
+# Forward variables defined in the env file.
 # Values pass through as arguments to msb; they are never echoed by this
 # script and never baked into the image.
 ENV_ARGS=()
@@ -309,12 +307,12 @@ fi
 # --- Project secrets ---
 # Discover the exact-directory pair after the trusted env file so sourced
 # secret values win over same-named ordinary assignments in the runtime's
-# inherited environment. TAU_PROJECTS_DIR: unset uses the default
-# ${HOME}/Projects; an explicitly empty value is invalid; relative values
-# resolve from the launch directory.
-if [ -n "${TAU_PROJECTS_DIR+x}" ]; then
+# inherited environment. OPENCODE_SANDBOX_PROJECTS_DIR: unset uses the
+# default ${HOME}/Projects; an explicitly empty value is invalid; relative
+# values resolve from the launch directory.
+if [ -n "${OPENCODE_SANDBOX_PROJECTS_DIR+x}" ]; then
     PROJECTS_MODE="explicit"
-    PROJECTS_VALUE="$TAU_PROJECTS_DIR"
+    PROJECTS_VALUE="$OPENCODE_SANDBOX_PROJECTS_DIR"
 else
     PROJECTS_MODE="default"
     PROJECTS_VALUE=""
@@ -353,22 +351,22 @@ fi
 
 # --- Mounts ---
 # The project and per-project home are writable. Existing top-level entries in
-# host ~/.tau are copied into a temporary snapshot with symlinks recursively
-# dereferenced, then mounted individually read-only under the bootstrap
-# directory. The entrypoint refreshes them in the persistent home on every
-# start, where Tau can use atomic replacement without modifying the host
-# defaults. credentials.json is never mounted: every sandbox keeps its own
+# the host opencode config are copied into a temporary snapshot with symlinks
+# recursively dereferenced, then mounted individually read-only under the
+# bootstrap directory. The entrypoint refreshes them in the persistent home
+# on every start, so opencode reads current host values without modifying the
+# host files. auth.json is never mounted: every sandbox keeps its own
 # project-local credential file in the persistent home, so OAuth sessions do
-# not share a host file. Sessions, logs, and trust state stay per-project.
-# Session and log mounts use backing paths outside the home so
-# microsandbox's root-owned mountpoint setup cannot create an unwritable
-# ~/.tau before the unprivileged entrypoint runs. Host history and trust
-# decisions are never exposed or modified.
+# not share a host file. Sessions, logs, and credential state stay
+# per-project. The storage and log mounts use backing paths outside the home
+# so microsandbox's root-owned mountpoint setup cannot create an unwritable
+# data directory before the unprivileged entrypoint runs. Host history is
+# never exposed or modified.
 # host-perms=mirror: mirror guest rwx bits to the host inode so sandbox-created
 # files (including +x scripts) keep their modes on the host and git stays clean.
 MOUNT_ARGS=(
     -v "$(pwd):/workspace:host-perms=mirror"
-    -v "$PERSIST_VOLUME:/home/tau"
+    -v "$PERSIST_VOLUME:/home/opencode"
 )
 
 # Top-level host config entries are copied with links recursively
@@ -384,7 +382,7 @@ fi
 for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
     name="${entry##*/}"
     case "$name" in
-        credentials.json|sessions|logs|trust.json|trust.json.lock|trust.json.pending|.host-config-bootstrapped|.host-config-synced)
+        auth.json|node_modules|package.json|package-lock.json|bun.lock|.gitignore|.host-config-bootstrapped|.host-config-synced)
             continue
             ;;
     esac
@@ -393,26 +391,26 @@ for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
         continue
     fi
     if [ -z "$BOOTSTRAP_STAGE" ]; then
-        BOOTSTRAP_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/tau-sandbox-bootstrap.XXXXXX")"
+        BOOTSTRAP_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opencode-sandbox-bootstrap.XXXXXX")"
     fi
     # Dereference both top-level and nested links while still on the host,
     # where absolute host paths are meaningful. The VM receives only the
     # resulting snapshot, never broken links back into the host filesystem.
     if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/$name"; then
-        echo "Error: failed to snapshot host Tau config entry: $entry" >&2
+        echo "Error: failed to snapshot host opencode config entry: $entry" >&2
         exit 1
     fi
-    MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
+    MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/opencode-sandbox/bootstrap/opencode/$name:ro")
 done
-[ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents:ro")
 MOUNT_ARGS+=(
-    -v "$SESSIONS_VOLUME:/var/lib/tau-sandbox/sessions"
-    -v "$LOGS_VOLUME:/var/lib/tau-sandbox/logs"
-    -v "$SCRIPT_DIR/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro"
+    -v "$SESSIONS_VOLUME:/var/lib/opencode-sandbox/sessions"
+    -v "$LOGS_VOLUME:/var/lib/opencode-sandbox/logs"
+    -v "$SCRIPT_DIR/config/APPEND_SYSTEM.md:/etc/opencode-sandbox/APPEND_SYSTEM.md:ro"
+    -v "$SCRIPT_DIR/config/opencode.json:/etc/opencode-sandbox/opencode.json:ro"
 )
 
 # --- Run ---
-# The public profile allows internet egress and gateway DNS. TAU_LAN_HOSTS
+# The public profile allows internet egress and gateway DNS. OPENCODE_SANDBOX_LAN_HOSTS
 # adds one narrow exact-IP rule per entry; all other private addresses remain
 # denied. Inbound stays closed because no ports are published. The low-level
 # --net-default-ingress deny path is intentionally avoided because it silently
@@ -420,7 +418,7 @@ MOUNT_ARGS+=(
 NET_RULES=()
 if [ -n "$LAN_HOSTS" ]; then
     if ! printf '%s' "$LAN_HOSTS" | grep -qE '^[0-9A-Za-z.:-]+(,[0-9A-Za-z.:-]+)*$'; then
-        echo "Error: TAU_LAN_HOSTS contains invalid entries." >&2
+        echo "Error: OPENCODE_SANDBOX_LAN_HOSTS contains invalid entries." >&2
         echo "Expected comma-separated IP addresses or hostnames." >&2
         exit 1
     fi

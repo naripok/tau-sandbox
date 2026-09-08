@@ -1,4 +1,4 @@
-"""Shared test infrastructure for tau-sandbox tests."""
+"""Shared test infrastructure for opencode-sandbox tests."""
 import hashlib
 import os
 import pathlib
@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-TEST_IMAGE = "tau-sandbox-test"
+TEST_IMAGE = "opencode-sandbox-test"
 TEST_IMAGE_REF = f"localhost/{TEST_IMAGE}:latest"
 
 skip_without_msb = pytest.mark.skipif(
@@ -49,7 +49,7 @@ skip_without_virtualization = pytest.mark.skipif(
 @pytest.fixture
 def sandbox_home(tmp_path):
     """A fake host $HOME per test so run.sh never reads the real user's
-    ~/.env, ~/.tau, or ~/.agents, and so env/config mounts are isolated."""
+    ~/.env, ~/.config/opencode, or ~/.agents, and so env/config mounts are isolated."""
     home = tmp_path / "home"
     home.mkdir()
     return home
@@ -97,9 +97,9 @@ def volume_names_for(project_path: str) -> tuple[str, str, str]:
     # run.sh hashes echo output, including its trailing newline.
     hash_suffix = hashlib.sha256((resolved + "\n").encode()).hexdigest()[:8]
     return (
-        f"tau-persist-{project_name}-{hash_suffix}",
-        f"tau-sessions-{project_name}-{hash_suffix}",
-        f"tau-logs-{project_name}-{hash_suffix}",
+        f"opencode-persist-{project_name}-{hash_suffix}",
+        f"opencode-sessions-{project_name}-{hash_suffix}",
+        f"opencode-logs-{project_name}-{hash_suffix}",
     )
 
 

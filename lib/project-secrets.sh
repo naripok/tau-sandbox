@@ -22,8 +22,9 @@ PROJECT_SECRETS_ENV_PATH=""
 PROJECT_SECRETS_NAMES=""
 
 # Reserved guest names: shell- and runtime-critical variables plus the
-# BASH and TAU_ prefixes (entrypoint internals live under TAU_ENTRYPOINT_).
-_PROJECT_SECRETS_RESERVED_RE='^(HOME|SHELL|TERM|COLORTERM|USER|LOGNAME|PATH|IFS|PWD|OLDPWD|SHLVL|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONHOME|PYTHONPATH|NODE_OPTIONS)$|^(BASH|TAU_)'
+# BASH and OPENCODE_SANDBOX_ prefixes (entrypoint internals live under
+# OPENCODE_SANDBOX_ENTRYPOINT_, a subset of the reserved prefix).
+_PROJECT_SECRETS_RESERVED_RE='^(HOME|SHELL|TERM|COLORTERM|USER|LOGNAME|PATH|IFS|PWD|OLDPWD|SHLVL|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONHOME|PYTHONPATH|NODE_OPTIONS)$|^(BASH|OPENCODE_SANDBOX_)'
 
 _project_secrets_fail() {
     printf 'project-secrets: %s\n' "$1" >&2
@@ -90,8 +91,8 @@ project_secrets_physical_path() {
 # project_secrets_prepare(launch_dir, home, projects_mode, projects_value)
 # — one-call discovery and sanity checks. projects_mode is "default"
 # (${home}/Projects; discovery disables when it is not a usable
-# directory) or "explicit" (projects_value is TAU_PROJECTS_DIR, resolved
-# from the launch directory when relative; unusable values fail).
+# directory) or "explicit" (projects_value is OPENCODE_SANDBOX_PROJECTS_DIR,
+# resolved from the launch directory when relative; unusable values fail).
 # Physical project membership is authoritative; the derived directory
 # mirrors the physical relative path under home with a dot-prefixed
 # first component. Exports PROJECT_SECRETS_PAIR_STATE and, for a
@@ -135,11 +136,11 @@ project_secrets_prepare() {
         fi
     else
         if [[ -z "$value" ]]; then
-            _project_secrets_fail "invalid TAU_PROJECTS_DIR: empty value" || return
+            _project_secrets_fail "invalid OPENCODE_SANDBOX_PROJECTS_DIR: empty value" || return
         fi
         root_lex="$(project_secrets_lexical_path "$value" "$launch_lex")"
         if [[ ! -d "$root_lex" || ! -r "$root_lex" || ! -x "$root_lex" ]]; then
-            _project_secrets_fail "invalid TAU_PROJECTS_DIR: $value" || return
+            _project_secrets_fail "invalid OPENCODE_SANDBOX_PROJECTS_DIR: $value" || return
         fi
     fi
     root_phys="$(project_secrets_physical_path "$root_lex")" || {

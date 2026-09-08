@@ -15,7 +15,7 @@ def test_makefile_exists():
 
 def test_makefile_has_required_targets():
     """The documented workflow targets must exist so the README stays honest."""
-    for target in ("install", "build", "shell", "tau", "clean", "reset", "images", "volumes"):
+    for target in ("install", "build", "shell", "opencode", "clean", "reset", "images", "volumes"):
         assert target in _text()
 
 

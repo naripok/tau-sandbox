@@ -35,7 +35,7 @@ def _fake_bin(tmp: pathlib.Path):
 def _fake_env(tmp: pathlib.Path, cwd, fake_bin, msb_log, podman_log, images_file, env, home=None):
     fake_env = os.environ.copy()
     fake_env["PATH"] = f"{fake_bin}:{fake_env['PATH']}"
-    # HOME follows the project dir so tests write ~/.env|~/.tau next to cwd;
+    # HOME follows the project dir so tests write ~/.env|~/.config/opencode next to cwd;
     # secret-launch tests pass an explicit home hosting the project pair.
     fake_env["HOME"] = str(home) if home is not None else str(cwd or tmp)
     fake_env["MSB_LOG"] = str(msb_log)
@@ -84,8 +84,8 @@ fi
 if [ "$1" = "run" ] && [ -n "${MSB_SNAPSHOT_CHECK:-}" ]; then
     for arg in "$@"; do
         case "$arg" in
-            *:/etc/tau-sandbox/bootstrap/tau/skills:ro)
-                source="${arg%:/etc/tau-sandbox/bootstrap/tau/skills:ro}"
+            *:/etc/opencode-sandbox/bootstrap/opencode/skills:ro)
+                source="${arg%:/etc/opencode-sandbox/bootstrap/opencode/skills:ro}"
                 if [ -f "$source/linked-skill/SKILL.md" ] && [ ! -L "$source/linked-skill" ]; then
                     printf 'dereferenced\\n' > "$MSB_SNAPSHOT_CHECK"
                 fi
@@ -96,10 +96,10 @@ fi
 if [ "$1" = "run" ] && [ -n "${MSB_SNAPSHOT_CONTENTS:-}" ]; then
     for arg in "$@"; do
         case "$arg" in
-            *:/etc/tau-sandbox/bootstrap/tau/*:ro)
+            *:/etc/opencode-sandbox/bootstrap/opencode/*:ro)
                 # Record each snapshotted entry's name and contents so
                 # tests can prove which config directory supplied it.
-                source="${arg%%:/etc/tau-sandbox/bootstrap/tau/*:ro}"
+                source="${arg%%:/etc/opencode-sandbox/bootstrap/opencode/*:ro}"
                 name="${arg##*/}"
                 name="${name%:ro}"
                 printf '%s\\t%s\\n' "$name" "$(cat "$source" 2>/dev/null)" >> "$MSB_SNAPSHOT_CONTENTS"
@@ -137,7 +137,7 @@ def invoke_run(*args, env=None, cwd=None, images=(), script=REPO_ROOT / "run.sh"
     """
     import tempfile
 
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="tau-run-test-"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="oc-run-test-"))
     fake_bin, msb_log, podman_log, images_file = _fake_bin(tmp)
     images_file.write_text("\n".join(images) + ("\n" if images else ""))
     fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env, home=home)
@@ -167,7 +167,7 @@ def invoke_run_tty(cwd, env=None, answer="y\n", images=(), script=REPO_ROOT / "r
     """
     import tempfile
 
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="tau-run-tty-"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="oc-run-tty-"))
     fake_bin, msb_log, podman_log, images_file = _fake_bin(tmp)
     images_file.write_text("\n".join(images) + ("\n" if images else ""))
     fake_env = _fake_env(tmp, cwd, fake_bin, msb_log, podman_log, images_file, env, home=home)
@@ -227,16 +227,16 @@ def test_run_script_generates_correct_msb_command():
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     # Mounts: workspace plus isolated home, session, and log volumes.
     assert "-v " in run_line and ":/workspace" in run_line
-    persist_token = next(tok for tok in run_line.split() if tok.startswith("tau-persist-"))
-    assert "tau-persist-tau-run-test-" in persist_token
-    assert persist_token.endswith(":/home/tau")
-    assert "tau-sessions-tau-run-test-" in run_line
-    assert ":/var/lib/tau-sandbox/sessions" in run_line
-    assert "tau-logs-tau-run-test-" in run_line
-    assert ":/var/lib/tau-sandbox/logs" in run_line
-    assert ":/home/tau/.tau/sessions" not in run_line
-    assert ":/home/tau/.tau/logs" not in run_line
-    assert "/config/APPEND_SYSTEM.md:/etc/tau-sandbox/APPEND_SYSTEM.md:ro" in run_line
+    persist_token = next(tok for tok in run_line.split() if tok.startswith("opencode-persist-"))
+    assert "opencode-persist-oc-run-test-" in persist_token
+    assert persist_token.endswith(":/home/opencode")
+    assert "opencode-sessions-oc-run-test-" in run_line
+    assert ":/var/lib/opencode-sandbox/sessions" in run_line
+    assert "opencode-logs-oc-run-test-" in run_line
+    assert ":/var/lib/opencode-sandbox/logs" in run_line
+    assert ":/home/opencode/.local/share/opencode/storage" not in run_line
+    assert ":/home/opencode/.local/share/opencode/log" not in run_line
+    assert "/config/APPEND_SYSTEM.md:/etc/opencode-sandbox/APPEND_SYSTEM.md:ro" in run_line
     # Resources and limits
     assert "-c 4" in run_line
     assert "-m 8G" in run_line
@@ -246,7 +246,7 @@ def test_run_script_generates_correct_msb_command():
     assert "--tmpfs /tmp" in run_line
     assert "--user 1000:1000" in run_line
     # Public profile: internet egress + gateway DNS from msb, LAN exceptions
-    # only when TAU_LAN_HOSTS is set (empty by default), and no published
+    # only when OPENCODE_SANDBOX_LAN_HOSTS is set (empty by default), and no published
     # inbound ports. The old --net-default-ingress deny path dropped DNS,
     # so it must not come back.
     assert "--net public" in run_line
@@ -256,14 +256,14 @@ def test_run_script_generates_correct_msb_command():
     # Working directory
     assert "-w /workspace" in run_line
     # Image and command
-    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+    assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
 
 
 def test_lan_hosts_emit_one_net_rule_per_entry(tmp_path):
-    """TAU_LAN_HOSTS adds one exact-IP --net-rule argument per entry."""
+    """OPENCODE_SANDBOX_LAN_HOSTS adds one exact-IP --net-rule argument per entry."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run(
-        "bash", cwd=tmp_path, env={"TAU_LAN_HOSTS": "192.168.1.100,192.168.1.101"}
+        "bash", cwd=tmp_path, env={"OPENCODE_SANDBOX_LAN_HOSTS": "192.168.1.100,192.168.1.101"}
     )
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
@@ -275,9 +275,9 @@ def test_run_script_uses_entrypoint_from_image():
     """run.sh must NOT append /usr/local/bin/entrypoint.sh: the image
     ENTRYPOINT already runs it (msb preserves ENTRYPOINT for `-- CMD`).
     The user command is passed through verbatim."""
-    result, msb_log, _ = invoke_run("tau", "-p", "hello")
+    result, msb_log, _ = invoke_run("opencode", "run", "hello")
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert run_line.endswith("-- tau -p hello")
+    assert run_line.endswith("-- opencode run hello")
     assert "entrypoint.sh" not in run_line
 
 
@@ -295,47 +295,44 @@ def test_run_script_forwards_env_file(tmp_path):
     assert "test-vllm-key" not in result.stderr
 
 
-def test_run_script_mounts_host_config_as_bootstrap_without_shared_credentials(tmp_path):
+def test_run_script_mounts_host_config_as_bootstrap_without_credentials(tmp_path):
     """Host config is a read-only bootstrap source; the host credential
-    file is neither mounted nor bootstrapped, so each sandbox uses
-    project-local credentials."""
+    file and opencode's generated install artifacts are neither mounted
+    nor bootstrapped, so each sandbox uses project-local credentials and
+    installs its own plugin dependencies."""
     (tmp_path / ".env").write_text("")
-    tau_dir = tmp_path / ".tau"
-    tau_dir.mkdir()
-    (tau_dir / "skills").mkdir()
-    (tau_dir / "settings.json").write_text("{}\n")
-    (tau_dir / "credentials.json").write_text('{"openai": "sk-host"}\n')
-    (tau_dir / "sessions").mkdir()
-    (tau_dir / "logs").mkdir()
-    (tau_dir / "trust.json").write_text('{"version": 1, "decisions": []}\n')
-    (tau_dir / "trust.json.lock").write_text("")
-    (tmp_path / ".agents").mkdir()
+    config_dir = tmp_path / ".opencode"
+    config_dir.mkdir()
+    (config_dir / "skills").mkdir()
+    (config_dir / "settings.json").write_text("{}\n")
+    (config_dir / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-host"}}\n')
+    (config_dir / "node_modules").mkdir()
+    (config_dir / "package.json").write_text("{}\n")
+    (config_dir / ".gitignore").write_text("node_modules\n")
 
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    bootstrap = "/etc/tau-sandbox/bootstrap/tau"
+    bootstrap = "/etc/opencode-sandbox/bootstrap/opencode"
     assert f":{bootstrap}/skills:ro" in run_line
     assert f":{bootstrap}/settings.json:ro" in run_line
-    assert f"-v {tau_dir.resolve()}/skills:{bootstrap}/skills:ro" not in run_line
-    assert f"-v {tau_dir.resolve()}/settings.json:{bootstrap}/settings.json:ro" not in run_line
-    assert f"{tau_dir.resolve()}/settings.json:/home/tau/.tau/settings.json" not in run_line
-    # credentials.json appears nowhere in the invocation: no shared mount,
+    assert f"-v {config_dir.resolve()}/skills:{bootstrap}/skills:ro" not in run_line
+    assert f"-v {config_dir.resolve()}/settings.json:{bootstrap}/settings.json:ro" not in run_line
+    assert f"{config_dir.resolve()}/settings.json:/home/opencode/.config/opencode/settings.json" not in run_line
+    # auth.json appears nowhere in the invocation: no shared mount,
     # no bootstrap snapshot of it, no direct mount into the home.
-    assert "credentials.json" not in run_line
-    assert f"-v {tau_dir.resolve()}/sessions" not in run_line
-    assert f"-v {tau_dir.resolve()}/logs" not in run_line
-    assert f"-v {tau_dir.resolve()}/trust.json" not in run_line
-    assert f"-v {tau_dir.resolve()}/trust.json.lock" not in run_line
-    assert f"-v {tmp_path.resolve()}/.agents:/home/tau/.agents:ro" in run_line
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
+    assert "auth.json" not in run_line
+    assert "node_modules" not in run_line
+    assert "package.json" not in run_line
+    assert ".gitignore" not in run_line
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_run_script_follows_host_config_symlinks(tmp_path):
     """Linked config resources are mounted by target under their link names."""
     (tmp_path / ".env").write_text("")
-    tau_dir = tmp_path / ".tau"
-    tau_dir.mkdir()
+    config_dir = tmp_path / ".opencode"
+    config_dir.mkdir()
     targets = tmp_path / "config-targets"
     targets.mkdir()
     skills = targets / "skills"
@@ -348,9 +345,9 @@ def test_run_script_follows_host_config_symlinks(tmp_path):
     extensions.mkdir()
     settings = targets / "settings.json"
     settings.write_text("{}\n")
-    (tau_dir / "skills").symlink_to(skills, target_is_directory=True)
-    (tau_dir / "extensions").symlink_to(extensions, target_is_directory=True)
-    (tau_dir / "settings.json").symlink_to(settings)
+    (config_dir / "skills").symlink_to(skills, target_is_directory=True)
+    (config_dir / "extensions").symlink_to(extensions, target_is_directory=True)
+    (config_dir / "settings.json").symlink_to(settings)
 
     snapshot_check = tmp_path / "snapshot-check"
     result, msb_log, _ = invoke_run(
@@ -359,7 +356,7 @@ def test_run_script_follows_host_config_symlinks(tmp_path):
     assert result.returncode == 0
     assert snapshot_check.read_text() == "dereferenced\n"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    bootstrap = "/etc/tau-sandbox/bootstrap/tau"
+    bootstrap = "/etc/opencode-sandbox/bootstrap/opencode"
     assert f":{bootstrap}/skills:ro" in run_line
     assert f":{bootstrap}/extensions:ro" in run_line
     assert f":{bootstrap}/settings.json:ro" in run_line
@@ -367,35 +364,35 @@ def test_run_script_follows_host_config_symlinks(tmp_path):
     assert str(skill_source.resolve()) not in run_line
     assert str(extensions.resolve()) not in run_line
     assert str(settings.resolve()) not in run_line
-    assert "tau-sandbox-bootstrap." in run_line
+    assert "opencode-sandbox-bootstrap." in run_line
 
 
 def test_run_script_skips_missing_host_config_mounts(tmp_path):
-    """Absent host config leaves Tau state local to the persistent home;
+    """Absent host config leaves opencode state local to the persistent home;
     no host credential file is mounted either."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert f"{tmp_path.resolve()}/.tau" not in run_line
+    assert f"{tmp_path.resolve()}/.opencode" not in run_line
     assert f"{tmp_path.resolve()}/.agents" not in run_line
-    assert "credentials.json" not in run_line
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
-    assert ":/var/lib/tau-sandbox/sessions" in run_line
-    assert ":/var/lib/tau-sandbox/logs" in run_line
+    assert "auth.json" not in run_line
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
+    assert ":/var/lib/opencode-sandbox/sessions" in run_line
+    assert ":/var/lib/opencode-sandbox/logs" in run_line
 
 
-def test_run_script_discovers_nearest_ancestor_tau_config(tmp_path):
-    """With TAU_CONFIG_DIR unset, the closest ancestor's .tau directory
+def test_run_script_discovers_nearest_ancestor_opencode_config(tmp_path):
+    """With OPENCODE_SANDBOX_CONFIG_DIR unset, the closest ancestor's .opencode directory
     supplies the host config; the snapshotted settings.json proves which
     dir won and credentials.json is never mounted."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
     workdir = project / "nested" / "dir"
     workdir.mkdir(parents=True)
-    tau = project / ".tau"
-    tau.mkdir()
-    (tau / "settings.json").write_text('{"scope": "project"}\n')
-    (tau / "credentials.json").write_text('{"openai": "sk-project"}\n')
+    config_dir = project / ".opencode"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text('{"scope": "project"}\n')
+    (config_dir / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-project"}}\n')
 
     snapshot_contents = tmp_path / "snapshot-contents"
     result, msb_log, _ = invoke_run(
@@ -404,26 +401,26 @@ def test_run_script_discovers_nearest_ancestor_tau_config(tmp_path):
     )
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
+    assert "auth.json" not in run_line
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert 'settings.json\t{"scope": "project"}' in snapshot_contents.read_text()
 
 
-def test_run_script_innermost_ancestor_tau_config_wins(tmp_path):
+def test_run_script_innermost_ancestor_opencode_config_wins(tmp_path):
     """Nested project configs shadow outer ones: closest ancestor wins, so
     a repo inside a configured project can override the project config."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
     workdir = project / "inner" / "sub"
     workdir.mkdir(parents=True)
-    outer_tau = project / ".tau"
-    inner_tau = project / "inner" / ".tau"
-    outer_tau.mkdir()
-    inner_tau.mkdir()
-    (outer_tau / "settings.json").write_text('{"scope": "outer"}\n')
-    (outer_tau / "credentials.json").write_text('{"openai": "sk-outer"}\n')
-    (inner_tau / "settings.json").write_text('{"scope": "inner"}\n')
-    (inner_tau / "credentials.json").write_text('{"openai": "sk-inner"}\n')
+    outer_config = project / ".opencode"
+    inner_config = project / "inner" / ".opencode"
+    outer_config.mkdir()
+    inner_config.mkdir()
+    (outer_config / "settings.json").write_text('{"scope": "outer"}\n')
+    (outer_config / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-outer"}}\n')
+    (inner_config / "settings.json").write_text('{"scope": "inner"}\n')
+    (inner_config / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-inner"}}\n')
 
     snapshot_contents = tmp_path / "snapshot-contents"
     result, msb_log, _ = invoke_run(
@@ -432,14 +429,14 @@ def test_run_script_innermost_ancestor_tau_config_wins(tmp_path):
     )
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
+    assert "auth.json" not in run_line
     snapshot = snapshot_contents.read_text()
     assert 'settings.json\t{"scope": "inner"}' in snapshot
     assert '{"scope": "outer"}' not in snapshot
 
 
-def test_run_script_discovers_tau_config_through_root_symlink(tmp_path):
-    """A project-root .tau symlink to an external config world is followed:
+def test_run_script_discovers_opencode_config_through_root_symlink(tmp_path):
+    """A project-root .opencode symlink to an external config world is followed:
     the world's real paths appear, so secrets can live outside the tree."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
@@ -448,8 +445,8 @@ def test_run_script_discovers_tau_config_through_root_symlink(tmp_path):
     world = tmp_path / "config-world"
     world.mkdir()
     (world / "settings.json").write_text('{"scope": "world"}\n')
-    (world / "credentials.json").write_text('{"openai": "sk-world"}\n')
-    (project / ".tau").symlink_to(world, target_is_directory=True)
+    (world / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-world"}}\n')
+    (project / ".opencode").symlink_to(world, target_is_directory=True)
 
     snapshot_contents = tmp_path / "snapshot-contents"
     result, msb_log, _ = invoke_run(
@@ -458,58 +455,58 @@ def test_run_script_discovers_tau_config_through_root_symlink(tmp_path):
     )
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
+    assert "auth.json" not in run_line
     assert 'settings.json\t{"scope": "world"}' in snapshot_contents.read_text()
 
 
-def test_run_script_tau_config_dir_override_beats_discovery(tmp_path):
-    """An explicitly set TAU_CONFIG_DIR always wins over a discovered .tau,
+def test_run_script_opencode_config_dir_override_beats_discovery(tmp_path):
+    """An explicitly set OPENCODE_SANDBOX_CONFIG_DIR always wins over a discovered .opencode,
     preserving the documented override for tests and automation."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
     workdir = project / "src"
     workdir.mkdir(parents=True)
-    (project / ".tau").mkdir()
+    (project / ".opencode").mkdir()
     override = tmp_path / "override"
     override.mkdir()
     (override / "settings.json").write_text('{"scope": "override"}\n')
-    (override / "credentials.json").write_text('{"openai": "sk-override"}\n')
+    (override / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-override"}}\n')
 
     snapshot_contents = tmp_path / "snapshot-contents"
     result, msb_log, _ = invoke_run(
         "bash", cwd=workdir,
-        env={"TAU_CONFIG_DIR": str(override),
+        env={"OPENCODE_SANDBOX_CONFIG_DIR": str(override),
              "MSB_SNAPSHOT_CONTENTS": str(snapshot_contents)},
     )
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
+    assert "auth.json" not in run_line
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert 'settings.json\t{"scope": "override"}' in snapshot_contents.read_text()
 
 
-def test_run_script_dangling_tau_symlink_falls_back_to_default(tmp_path):
-    """A dangling .tau link is not a config directory, so discovery keeps
+def test_run_script_dangling_opencode_symlink_falls_back_to_default(tmp_path):
+    """A dangling .opencode link is not a config directory, so discovery keeps
     walking and the default config applies instead of aborting."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
     workdir = project / "src"
     workdir.mkdir(parents=True)
-    (project / ".tau").symlink_to(
+    (project / ".opencode").symlink_to(
         tmp_path / "missing-world", target_is_directory=True
     )
 
     result, msb_log, _ = invoke_run("bash", cwd=workdir)
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_run_script_resources_are_overridable(tmp_path):
-    """TAU_CPUS / TAU_MEM / TAU_PIDS override the defaults."""
+    """OPENCODE_SANDBOX_CPUS / OPENCODE_SANDBOX_MEM / OPENCODE_SANDBOX_PIDS override the defaults."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run(
-        "bash", cwd=tmp_path, env={"TAU_CPUS": "2", "TAU_MEM": "4G", "TAU_PIDS": "512"}
+        "bash", cwd=tmp_path, env={"OPENCODE_SANDBOX_CPUS": "2", "OPENCODE_SANDBOX_MEM": "4G", "OPENCODE_SANDBOX_PIDS": "512"}
     )
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert "-c 2" in run_line
@@ -518,10 +515,10 @@ def test_run_script_resources_are_overridable(tmp_path):
 
 
 def test_per_project_image_with_packages_builds_and_loads(tmp_path):
-    """.tau-packages triggers an interactive approval, then a per-project
+    """.opencode-packages triggers an interactive approval, then a per-project
     image name and a podman build --build-arg EXTRA_PACKAGES + save | msb
     load pipeline."""
-    pkg_file = tmp_path / ".tau-packages"
+    pkg_file = tmp_path / ".opencode-packages"
     pkg_file.write_text("# build tools\ncmake\npkgconf\n")
     pkg_hash = hashlib.sha256(pkg_file.read_bytes()).hexdigest()[:8]
     (tmp_path / ".env").write_text("")
@@ -530,7 +527,7 @@ def test_per_project_image_with_packages_builds_and_loads(tmp_path):
     assert rc == 0, f"output: {output}"
     assert "Approve?" in output
 
-    expected_image = f"tau-agent-isolated-{tmp_path.name}-{_base_hash()}-{pkg_hash}"
+    expected_image = f"opencode-agent-isolated-{tmp_path.name}-{_base_hash()}-{pkg_hash}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"localhost/{expected_image}:latest -- bash" in run_line
     build_line = next(line for line in podman_log if line.startswith("podman build"))
@@ -548,23 +545,23 @@ def test_dot_directory_package_image_name_is_sanitized(tmp_path):
     may already hold persistent state."""
     project = tmp_path / ".dotproj"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
-    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    pkg_hash = hashlib.sha256((project / ".opencode-packages").read_bytes()).hexdigest()[:8]
 
     rc, output, msb_log, podman_log = invoke_run_tty(cwd=project, answer="y\n")
     assert rc == 0, f"output: {output}"
     assert "Approve?" in output
 
-    expected_image = f"tau-agent-isolated-dotproj-{_base_hash()}-{pkg_hash}"
+    expected_image = f"opencode-agent-isolated-dotproj-{_base_hash()}-{pkg_hash}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"localhost/{expected_image}:latest -- bash" in run_line
     build_line = next(line for line in podman_log if line.startswith("podman build"))
     assert "-t" in build_line and expected_image in build_line
     # Volume names keep the raw basename (legal msb volume names).
-    assert "tau-persist-.dotproj-" in run_line
-    assert "tau-sessions-.dotproj-" in run_line
-    assert "tau-logs-.dotproj-" in run_line
+    assert "opencode-persist-.dotproj-" in run_line
+    assert "opencode-sessions-.dotproj-" in run_line
+    assert "opencode-logs-.dotproj-" in run_line
 
 
 def test_dot_directory_without_packages_keeps_raw_volume_names(tmp_path):
@@ -578,10 +575,10 @@ def test_dot_directory_without_packages_keeps_raw_volume_names(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=project)
     assert result.returncode == 0, f"stderr: {result.stderr}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
-    assert "tau-persist-.dotproj-" in run_line
-    assert "tau-sessions-.dotproj-" in run_line
-    assert "tau-logs-.dotproj-" in run_line
+    assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
+    assert "opencode-persist-.dotproj-" in run_line
+    assert "opencode-sessions-.dotproj-" in run_line
+    assert "opencode-logs-.dotproj-" in run_line
 
 
 def test_uppercase_directory_image_name_is_lowercased(tmp_path):
@@ -590,17 +587,17 @@ def test_uppercase_directory_image_name_is_lowercased(tmp_path):
     existing state of working uppercase-named projects stays put."""
     project = tmp_path / "MyProject"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
-    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    pkg_hash = hashlib.sha256((project / ".opencode-packages").read_bytes()).hexdigest()[:8]
 
     rc, output, msb_log, _ = invoke_run_tty(cwd=project, answer="y\n")
     assert rc == 0, f"output: {output}"
 
-    expected_image = f"tau-agent-isolated-myproject-{_base_hash()}-{pkg_hash}"
+    expected_image = f"opencode-agent-isolated-myproject-{_base_hash()}-{pkg_hash}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"localhost/{expected_image}:latest -- bash" in run_line
-    assert "tau-persist-MyProject-" in run_line
+    assert "opencode-persist-MyProject-" in run_line
 
 
 def test_space_directory_names_are_sanitized(tmp_path):
@@ -608,19 +605,19 @@ def test_space_directory_names_are_sanitized(tmp_path):
     both derived name families use the sanitized basename."""
     project = tmp_path / "my project"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
-    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    pkg_hash = hashlib.sha256((project / ".opencode-packages").read_bytes()).hexdigest()[:8]
 
     rc, output, msb_log, _ = invoke_run_tty(cwd=project, answer="y\n")
     assert rc == 0, f"output: {output}"
 
-    expected_image = f"tau-agent-isolated-my_project-{_base_hash()}-{pkg_hash}"
+    expected_image = f"opencode-agent-isolated-my_project-{_base_hash()}-{pkg_hash}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"localhost/{expected_image}:latest -- bash" in run_line
-    assert "tau-persist-my_project-" in run_line
-    assert "tau-sessions-my_project-" in run_line
-    assert "tau-logs-my_project-" in run_line
+    assert "opencode-persist-my_project-" in run_line
+    assert "opencode-sessions-my_project-" in run_line
+    assert "opencode-logs-my_project-" in run_line
 
 
 def test_dot_directory_rebuild_prunes_superseded_images(tmp_path):
@@ -629,19 +626,19 @@ def test_dot_directory_rebuild_prunes_superseded_images(tmp_path):
     while other package hashes (same-image-name sibling) are kept."""
     project = tmp_path / ".dotproj"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
-    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    pkg_hash = hashlib.sha256((project / ".opencode-packages").read_bytes()).hexdigest()[:8]
     name = "dotproj"  # sanitized image name
-    legacy_current = f"localhost/tau-agent-isolated-{name}-{pkg_hash}:latest"
-    stale_base = f"localhost/tau-agent-isolated-{name}-00000000-{pkg_hash}:latest"
-    sibling = f"localhost/tau-agent-isolated-{name}-deadbeef-ffffffff:latest"
+    legacy_current = f"localhost/opencode-agent-isolated-{name}-{pkg_hash}:latest"
+    stale_base = f"localhost/opencode-agent-isolated-{name}-00000000-{pkg_hash}:latest"
+    sibling = f"localhost/opencode-agent-isolated-{name}-deadbeef-ffffffff:latest"
 
     rc, output, msb_log, _ = invoke_run_tty(
         cwd=project, answer="y\n", images=(legacy_current, stale_base, sibling),
     )
     assert rc == 0, f"output: {output}"
-    current = f"localhost/tau-agent-isolated-{name}-{_base_hash()}-{pkg_hash}:latest"
+    current = f"localhost/opencode-agent-isolated-{name}-{_base_hash()}-{pkg_hash}:latest"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"{current} -- bash" in run_line
     rmi_lines = {line for line in msb_log if line.startswith("msb rmi")}
@@ -652,10 +649,10 @@ def test_current_package_image_skips_build_and_prune(tmp_path):
     """An up-to-date cached package image (current base and package hashes)
     boots directly: no podman build, no rmi. Locks the reuse guarantee and
     the no-prune-on-cache-hit rule."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
-    pkg_hash = hashlib.sha256((tmp_path / ".tau-packages").read_bytes()).hexdigest()[:8]
-    current = f"localhost/tau-agent-isolated-{tmp_path.name}-{_base_hash()}-{pkg_hash}:latest"
+    pkg_hash = hashlib.sha256((tmp_path / ".opencode-packages").read_bytes()).hexdigest()[:8]
+    current = f"localhost/opencode-agent-isolated-{tmp_path.name}-{_base_hash()}-{pkg_hash}:latest"
     result, msb_log, podman_log = invoke_run("bash", cwd=tmp_path, images=(current,))
     assert result.returncode == 0
     assert not podman_log, f"unexpected podman invocations: {podman_log}"
@@ -671,7 +668,7 @@ def test_missing_containerfile_aborts_package_launch(tmp_path):
     repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
     result, _, podman_log = invoke_run("bash", cwd=project, script=repo / "run.sh")
     assert result.returncode == 1
@@ -685,7 +682,7 @@ def test_missing_config_aborts_package_launch(tmp_path):
     repo = _stub_repo(tmp_path, "stub-repo", config=False)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
     result, _, podman_log = invoke_run("bash", cwd=project, script=repo / "run.sh")
     assert result.returncode == 1
@@ -703,7 +700,7 @@ def test_added_base_input_changes_tag(tmp_path):
     (extra_repo / "config" / "extra.txt").write_text("extra\n")
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
     rc_a, _, msb_a, _ = invoke_run_tty(cwd=project, script=base_repo / "run.sh", answer="y\n")
     rc_b, _, msb_b, _ = invoke_run_tty(cwd=project, script=extra_repo / "run.sh", answer="y\n")
@@ -742,11 +739,11 @@ def test_non_file_config_entries_do_not_change_tag(tmp_path):
     repo = _stub_repo(tmp_path, "stub-repo")
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
-    pkg_hash = hashlib.sha256((project / ".tau-packages").read_bytes()).hexdigest()[:8]
+    pkg_hash = hashlib.sha256((project / ".opencode-packages").read_bytes()).hexdigest()[:8]
     current = (
-        f"localhost/tau-agent-isolated-{project.name}-{_base_hash(repo)}-{pkg_hash}:latest"
+        f"localhost/opencode-agent-isolated-{project.name}-{_base_hash(repo)}-{pkg_hash}:latest"
     )
     # A directory appears under config/ after the image was built.
     (repo / "config" / "build-cache").mkdir()
@@ -764,14 +761,14 @@ def test_stale_package_image_rebuilds_and_prunes_superseded(tmp_path):
     superseded images of the current package content are replaced after
     approval, and pruned afterwards, while images with other package hashes
     (same-basename sibling, earlier content) remain untouched."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
-    pkg_hash = hashlib.sha256((tmp_path / ".tau-packages").read_bytes()).hexdigest()[:8]
+    pkg_hash = hashlib.sha256((tmp_path / ".opencode-packages").read_bytes()).hexdigest()[:8]
     name = tmp_path.name
-    legacy_current = f"localhost/tau-agent-isolated-{name}-{pkg_hash}:latest"
-    stale_base = f"localhost/tau-agent-isolated-{name}-00000000-{pkg_hash}:latest"
-    sibling = f"localhost/tau-agent-isolated-{name}-deadbeef-ffffffff:latest"
-    legacy_other = f"localhost/tau-agent-isolated-{name}-ffffffff:latest"
+    legacy_current = f"localhost/opencode-agent-isolated-{name}-{pkg_hash}:latest"
+    stale_base = f"localhost/opencode-agent-isolated-{name}-00000000-{pkg_hash}:latest"
+    sibling = f"localhost/opencode-agent-isolated-{name}-deadbeef-ffffffff:latest"
+    legacy_other = f"localhost/opencode-agent-isolated-{name}-ffffffff:latest"
 
     rc, output, msb_log, podman_log = invoke_run_tty(
         cwd=tmp_path, answer="y\n",
@@ -779,7 +776,7 @@ def test_stale_package_image_rebuilds_and_prunes_superseded(tmp_path):
     )
     assert rc == 0, f"output: {output}"
     assert "Approve?" in output
-    current = f"localhost/tau-agent-isolated-{name}-{_base_hash()}-{pkg_hash}:latest"
+    current = f"localhost/opencode-agent-isolated-{name}-{_base_hash()}-{pkg_hash}:latest"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert f"{current} -- bash" in run_line
     build_line = next(line for line in podman_log if line.startswith("podman build"))
@@ -792,9 +789,9 @@ def test_stale_package_image_rebuilds_and_prunes_superseded(tmp_path):
 def test_stale_package_image_refuses_non_interactively(tmp_path):
     """A base-change rebuild keeps the approval gate: with only a stale tag
     in the cache and no terminal, the launch fails without building."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
-    stale = f"localhost/tau-agent-isolated-{tmp_path.name}-00000000:latest"
+    stale = f"localhost/opencode-agent-isolated-{tmp_path.name}-00000000:latest"
     result, _, podman_log = invoke_run("bash", cwd=tmp_path, images=(stale,))
     assert result.returncode == 1
     assert "not a terminal" in result.stderr
@@ -805,10 +802,10 @@ def test_prune_rmi_failure_does_not_fail_launch(tmp_path):
     """A failed msb rmi during pruning must never fail the build, load, or
     launch, and must not be reported as an error: pruning is cache hygiene,
     not a launch blocker."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
-    pkg_hash = hashlib.sha256((tmp_path / ".tau-packages").read_bytes()).hexdigest()[:8]
-    stale = f"localhost/tau-agent-isolated-{tmp_path.name}-00000000-{pkg_hash}:latest"
+    pkg_hash = hashlib.sha256((tmp_path / ".opencode-packages").read_bytes()).hexdigest()[:8]
+    stale = f"localhost/opencode-agent-isolated-{tmp_path.name}-00000000-{pkg_hash}:latest"
     rc, output, _, podman_log = invoke_run_tty(
         cwd=tmp_path, answer="y\n", images=(stale,), env={"MSB_RMI_FAIL": "1"},
     )
@@ -819,7 +816,7 @@ def test_prune_rmi_failure_does_not_fail_launch(tmp_path):
 
 
 def test_shared_base_launch_ignores_missing_base_inputs(tmp_path):
-    """Projects without a non-empty .tau-packages file never derive a
+    """Projects without a non-empty .opencode-packages file never derive a
     package tag, so a missing Containerfile must not abort them: they boot
     the shared base image."""
     repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
@@ -829,19 +826,19 @@ def test_shared_base_launch_ignores_missing_base_inputs(tmp_path):
     result, msb_log, _ = invoke_run("bash", cwd=project, script=repo / "run.sh")
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+    assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
 
 
 def test_tau_image_override_ignores_missing_base_inputs(tmp_path):
-    """TAU_IMAGE bypasses package processing entirely, so a missing
+    """OPENCODE_SANDBOX_IMAGE bypasses package processing entirely, so a missing
     Containerfile must not abort an override launch."""
     repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".tau-packages").write_text("cmake\n")
+    (project / ".opencode-packages").write_text("cmake\n")
     (project / ".env").write_text("")
     result, msb_log, _ = invoke_run(
-        "bash", cwd=project, script=repo / "run.sh", env={"TAU_IMAGE": "custom:tag"}
+        "bash", cwd=project, script=repo / "run.sh", env={"OPENCODE_SANDBOX_IMAGE": "custom:tag"}
     )
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
@@ -850,7 +847,7 @@ def test_tau_image_override_ignores_missing_base_inputs(tmp_path):
 
 def test_packages_approval_declined_aborts(tmp_path):
     """Declining the approval aborts without building anything."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
     rc, output, _, podman_log = invoke_run_tty(cwd=tmp_path, answer="n\n")
     assert rc == 1
@@ -862,17 +859,17 @@ def test_no_rebuild_when_image_exists(tmp_path):
     """Image presence in the msb cache skips podman build entirely."""
     (tmp_path / ".env").write_text("")
     result, msb_log, podman_log = invoke_run(
-        "bash", cwd=tmp_path, images=("localhost/tau-agent-isolated:latest",)
+        "bash", cwd=tmp_path, images=("localhost/opencode-agent-isolated:latest",)
     )
     assert result.returncode == 0
     assert not podman_log, f"unexpected podman invocations: {podman_log}"
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+    assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
 
 
 def test_packages_approval_required_interactively(tmp_path):
     """Package rebuilds refuse when stdin is not a terminal."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
     result, _, _ = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 1
@@ -880,8 +877,8 @@ def test_packages_approval_required_interactively(tmp_path):
 
 
 def test_packages_reject_dangerous_characters(tmp_path):
-    """Shell metacharacters in .tau-packages abort before any build."""
-    (tmp_path / ".tau-packages").write_text("cmake; rm -rf /\n")
+    """Shell metacharacters in .opencode-packages abort before any build."""
+    (tmp_path / ".opencode-packages").write_text("cmake; rm -rf /\n")
     (tmp_path / ".env").write_text("")
     result, _, podman_log = invoke_run("bash", cwd=tmp_path)
     assert result.returncode == 1
@@ -890,11 +887,11 @@ def test_packages_reject_dangerous_characters(tmp_path):
 
 
 def test_tau_image_override_bypasses_packages(tmp_path):
-    """TAU_IMAGE passes the reference through and never builds."""
-    (tmp_path / ".tau-packages").write_text("cmake\n")
+    """OPENCODE_SANDBOX_IMAGE passes the reference through and never builds."""
+    (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")
     result, msb_log, podman_log = invoke_run(
-        "bash", cwd=tmp_path, env={"TAU_IMAGE": "custom:tag"}
+        "bash", cwd=tmp_path, env={"OPENCODE_SANDBOX_IMAGE": "custom:tag"}
     )
     assert result.returncode == 0
     assert not podman_log
@@ -907,19 +904,19 @@ def test_reset_removes_all_project_volumes(tmp_path):
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("--reset", cwd=tmp_path)
     assert result.returncode == 0
-    assert "Volumes tau-persist-" in result.stdout
+    assert "Volumes opencode-persist-" in result.stdout
     rm_line = next(line for line in msb_log if "volume rm" in line)
-    assert f"msb volume rm tau-persist-{tmp_path.name}-" in rm_line
-    assert f"tau-sessions-{tmp_path.name}-" in rm_line
-    assert f"tau-logs-{tmp_path.name}-" in rm_line
+    assert f"msb volume rm opencode-persist-{tmp_path.name}-" in rm_line
+    assert f"opencode-sessions-{tmp_path.name}-" in rm_line
+    assert f"opencode-logs-{tmp_path.name}-" in rm_line
 
 
 def test_shared_base_image_used_without_packages(tmp_path):
-    """No .tau-packages => the shared base image reference is used."""
+    """No .opencode-packages => the shared base image reference is used."""
     (tmp_path / ".env").write_text("")
     result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
     run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+    assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
 
 
 # --- Project-secret integration (present-pair launches through run.sh) ---
@@ -929,7 +926,7 @@ def test_shared_base_image_used_without_packages(tmp_path):
 # sourced values reaching the runtime environment, forwarding suppression,
 # and exactly one pass-through --secret-conf in the final invocation.
 
-BASE_IMAGE = "localhost/tau-agent-isolated:latest"
+BASE_IMAGE = "localhost/opencode-agent-isolated:latest"
 DUMMY_VALUE = "dummy-value-123"
 DEFAULT_YAML = "KEY:\n  value: \"${KEY}\"\n  allow:\n    - api.example.com\n"
 
@@ -969,18 +966,18 @@ def test_reset_bypasses_invalid_secret_sources(tmp_path):
     (secret / "secrets.env").mkdir()  # invalid source type
     result, msb_log, podman_log = invoke_run("--reset", cwd=proj, home=home)
     assert result.returncode == 0
-    assert "Volumes tau-persist-proj-" in result.stdout
+    assert "Volumes opencode-persist-proj-" in result.stdout
     assert len(msb_log) == 1
-    assert msb_log[0].startswith("msb volume rm tau-persist-proj-")
-    assert "tau-sessions-proj-" in msb_log[0]
-    assert "tau-logs-proj-" in msb_log[0]
+    assert msb_log[0].startswith("msb volume rm opencode-persist-proj-")
+    assert "opencode-sessions-proj-" in msb_log[0]
+    assert "opencode-logs-proj-" in msb_log[0]
     assert not podman_log
 
 
 def test_root_outside_relative_and_nested_mapping_contract(tmp_path):
     """Every exact mapping scenario through the launcher: the default root,
     exact nested mapping without inheritance, explicit absolute and relative
-    TAU_PROJECTS_DIR roots, launches outside the root, an absent default
+    OPENCODE_SANDBOX_PROJECTS_DIR roots, launches outside the root, an absent default
     root, and the invalid explicitly-empty override. The --secret-conf
     marker distinguishes present pairs from secret-free launches."""
     home, proj, secret = make_secret_project(tmp_path)
@@ -1007,7 +1004,7 @@ def test_root_outside_relative_and_nested_mapping_contract(tmp_path):
     (root2 / "proj").mkdir(parents=True)
     result, msb_log, _ = invoke_run(
         "bash", cwd=root2 / "proj", home=home, images=(BASE_IMAGE,),
-        env={"TAU_PROJECTS_DIR": str(root2)},
+        env={"OPENCODE_SANDBOX_PROJECTS_DIR": str(root2)},
     )
     assert result.returncode == 0, result.stderr
     assert _secret_run_line(msb_log) is not None
@@ -1016,7 +1013,7 @@ def test_root_outside_relative_and_nested_mapping_contract(tmp_path):
     (root3 / "proj").mkdir(parents=True)
     result, msb_log, _ = invoke_run(
         "bash", cwd=root3 / "proj", home=home, images=(BASE_IMAGE,),
-        env={"TAU_PROJECTS_DIR": ".."},
+        env={"OPENCODE_SANDBOX_PROJECTS_DIR": ".."},
     )
     assert result.returncode == 0, result.stderr
     assert _secret_run_line(msb_log) is not None
@@ -1034,13 +1031,13 @@ def test_root_outside_relative_and_nested_mapping_contract(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert _secret_run_line(msb_log) is None
-    # An explicitly empty TAU_PROJECTS_DIR is invalid.
+    # An explicitly empty OPENCODE_SANDBOX_PROJECTS_DIR is invalid.
     result, msb_log, _ = invoke_run(
         "bash", cwd=proj, home=home, images=(BASE_IMAGE,),
-        env={"TAU_PROJECTS_DIR": ""},
+        env={"OPENCODE_SANDBOX_PROJECTS_DIR": ""},
     )
     assert result.returncode == 1
-    assert "TAU_PROJECTS_DIR" in result.stderr
+    assert "OPENCODE_SANDBOX_PROJECTS_DIR" in result.stderr
     assert not any(line.startswith("msb run") for line in msb_log)
 
 
@@ -1059,7 +1056,7 @@ def test_no_pair_preserves_existing_invocation(tmp_path):
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     assert "--secret-conf" not in run_line
     assert "-e ORD=1" in run_line
-    assert "localhost/tau-agent-isolated:latest -- bash" in run_line
+    assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
 
 
 def test_incomplete_pair_and_invalid_derived_directory_fail(tmp_path):
@@ -1085,7 +1082,7 @@ def test_incomplete_pair_and_invalid_derived_directory_fail(tmp_path):
 
 
 def test_reserved_secret_name_fails_before_boot(tmp_path):
-    """A declared reserved name (exact set or BASH/TAU_ prefix) aborts the
+    """A declared reserved name (exact set or BASH/OPENCODE_SANDBOX_ prefix) aborts the
     launch before any runtime call, naming the variable: such a secret
     would let the runtime overwrite shell- or launcher-critical state."""
     home, proj, secret = make_secret_project(
@@ -1105,7 +1102,7 @@ def test_secret_conf_is_only_secret_argument_and_argv_preserved(tmp_path):
     preserved byte-for-byte."""
     home, proj, secret = make_secret_project(tmp_path)
     result, msb_log, _ = invoke_run(
-        "tau", "-p", "hello", cwd=proj, home=home, images=(BASE_IMAGE,)
+        "opencode", "run", "hello", cwd=proj, home=home, images=(BASE_IMAGE,)
     )
     assert result.returncode == 0, result.stderr
     run_line = _secret_run_line(msb_log)
@@ -1116,11 +1113,11 @@ def test_secret_conf_is_only_secret_argument_and_argv_preserved(tmp_path):
     )
     assert DUMMY_VALUE not in run_line
     assert "-e KEY=" not in run_line
-    assert run_line.endswith("-- tau -p hello")
+    assert run_line.endswith("-- opencode run hello")
 
 
 def test_secret_values_win_over_env_file_and_reach_runtime_environment(tmp_path):
-    """A name assigned in both TAU_ENV_FILE and secrets.env reaches the
+    """A name assigned in both OPENCODE_SANDBOX_ENV_FILE and secrets.env reaches the
     runtime process environment with the secrets.env value, while the
     ordinary -e forwarding of that name is suppressed: the protected
     source, not the ordinary file, owns the variable."""
@@ -1143,33 +1140,33 @@ def test_secret_values_win_over_env_file_and_reach_runtime_environment(tmp_path)
 
 def test_shared_bootstrap_entry_list_drives_snapshot(tmp_path):
     """The snapshot enumeration excludes exactly the documented entries:
-    excluded names never become mounts (a symlinked `sessions` entry
+    excluded names never become mounts (a symlinked `node_modules` entry
     cannot leak the secret directory into the guest), while ordinary
     entries are snapshotted and mounted."""
     home, proj, secret = make_secret_project(tmp_path)
-    tau = home / ".tau"
-    skills = tau / "skills"
+    config_dir = home / ".opencode"
+    skills = config_dir / "skills"
     skills.mkdir(parents=True)
     (skills / "SKILL.md").write_text("# skill\n")
-    (tau / "sessions").symlink_to(secret, target_is_directory=True)
-    (tau / "logs").mkdir()
-    (tau / "trust.json").write_text("{}\n")
-    (tau / "credentials.json").write_text("{}\n")
+    (config_dir / "node_modules").symlink_to(secret, target_is_directory=True)
+    (config_dir / "package.json").write_text("{}\n")
+    (config_dir / ".gitignore").write_text("node_modules\n")
+    (config_dir / "auth.json").write_text("{}\n")
 
     result, msb_log, _ = invoke_run("bash", cwd=proj, home=home, images=(BASE_IMAGE,))
     assert result.returncode == 0, result.stderr
     run_line = _secret_run_line(msb_log)
-    bootstrap = "/etc/tau-sandbox/bootstrap/tau"
+    bootstrap = "/etc/opencode-sandbox/bootstrap/opencode"
     assert f":{bootstrap}/skills:ro" in run_line
-    assert f":{bootstrap}/credentials.json" not in run_line
-    assert f":{bootstrap}/sessions" not in run_line
-    assert f":{bootstrap}/logs" not in run_line
-    assert f":{bootstrap}/trust.json" not in run_line
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
+    assert f":{bootstrap}/node_modules" not in run_line
+    assert f":{bootstrap}/package.json" not in run_line
+    assert f":{bootstrap}/.gitignore" not in run_line
+    assert f":{bootstrap}/auth.json" not in run_line
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_relative_env_file_works_with_present_pair(tmp_path):
-    """A caller-supplied relative TAU_ENV_FILE resolves against the launch
+    """A caller-supplied relative OPENCODE_SANDBOX_ENV_FILE resolves against the launch
     directory, so a present pair forwards it exactly like a no-pair
     launch would."""
     home, proj, secret = make_secret_project(tmp_path)
@@ -1179,7 +1176,7 @@ def test_relative_env_file_works_with_present_pair(tmp_path):
         cwd=proj,
         home=home,
         images=(BASE_IMAGE,),
-        env={"TAU_ENV_FILE": "rel.env"},
+        env={"OPENCODE_SANDBOX_ENV_FILE": "rel.env"},
     )
     assert result.returncode == 0, result.stderr
     run_line = _secret_run_line(msb_log)
@@ -1194,9 +1191,9 @@ def test_bootstrap_snapshot_cleanup_after_runtime_success_and_failure(tmp_path):
     success and on failure, while the runtime's exit status is
     preserved."""
     home, proj, secret = make_secret_project(tmp_path)
-    tau = home / ".tau"
-    tau.mkdir()
-    (tau / "settings.json").write_text("{}\n")
+    config_dir = home / ".opencode"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text("{}\n")
     result, msb_log, _ = invoke_run("bash", cwd=proj, home=home, images=(BASE_IMAGE,))
     assert result.returncode == 0, result.stderr
     bootstrap = _bootstrap_stage_path(_secret_run_line(msb_log))
@@ -1213,6 +1210,6 @@ def test_bootstrap_snapshot_cleanup_after_runtime_success_and_failure(tmp_path):
 
 def _bootstrap_stage_path(run_line):
     """The bootstrap snapshot directory the runtime invocation mounted."""
-    match = re.search(r"-v (/[^ ]*tau-sandbox-bootstrap\.[^/ ]*)/", run_line)
+    match = re.search(r"-v (/[^ ]*opencode-sandbox-bootstrap\.[^/ ]*)/", run_line)
     assert match, run_line
     return pathlib.Path(match.group(1))

@@ -139,7 +139,7 @@ def test_nested_launch_does_not_inherit(tmp_path):
 
 
 def test_explicit_absolute_root_changes_mapping(tmp_path):
-    """Prove an absolute TAU_PROJECTS_DIR replaces the default root in the
+    """Prove an absolute OPENCODE_SANDBOX_PROJECTS_DIR replaces the default root in the
     relative-path derivation."""
     home = tmp_path / "home"
     home.mkdir()
@@ -153,7 +153,7 @@ def test_explicit_absolute_root_changes_mapping(tmp_path):
 
 
 def test_explicit_relative_root_resolves_from_launch_directory(tmp_path):
-    """Prove a relative TAU_PROJECTS_DIR resolves from the launch
+    """Prove a relative OPENCODE_SANDBOX_PROJECTS_DIR resolves from the launch
     directory (not the process cwd), so `..`-style values keep working
     when the launcher was started elsewhere."""
     home = tmp_path / "home"
@@ -222,7 +222,7 @@ def test_unusable_default_root_disables_discovery(tmp_path):
 
 
 def test_invalid_explicit_root_fails(tmp_path):
-    """Prove an explicit TAU_PROJECTS_DIR that is empty, missing, or not
+    """Prove an explicit OPENCODE_SANDBOX_PROJECTS_DIR that is empty, missing, or not
     a directory fails the launch naming the setting: an explicit
     configuration error must never silently disable protection."""
     home = _make_home(tmp_path)
@@ -231,7 +231,7 @@ def test_invalid_explicit_root_fails(tmp_path):
         if value.endswith("/f"):
             pathlib.Path(value).write_text("x")
         result, state = run_prepare(project, home, "explicit", value)
-        _assert_fail(result, state, "TAU_PROJECTS_DIR")
+        _assert_fail(result, state, "OPENCODE_SANDBOX_PROJECTS_DIR")
 
 
 def test_invalid_projects_mode_fails(tmp_path):
@@ -405,7 +405,7 @@ def test_present_pair_exports_declared_names_deduplicated(tmp_path):
 
 
 def test_reserved_names_fail_naming_the_variable(tmp_path):
-    """Prove reserved exact names and the BASH/TAU_ prefixes are rejected
+    """Prove reserved exact names and the BASH/OPENCODE_SANDBOX_ prefixes are rejected
     naming the offending variable: such a secret would let the runtime
     overwrite shell- or launcher-critical state."""
     home = _make_home(tmp_path)
@@ -413,7 +413,7 @@ def test_reserved_names_fail_naming_the_variable(tmp_path):
     secret = home / ".megali"
     secret.mkdir()
     (secret / "secrets.yaml").write_text("X:\n  allow: []\n")
-    for name in ("PATH", "IFS", "BASH_ENV", "HOME", "BASH_FOO", "TAU_X"):
+    for name in ("PATH", "IFS", "BASH_ENV", "HOME", "BASH_FOO", "OPENCODE_SANDBOX_X"):
         (secret / "secrets.env").write_text(f"{name}=value\n")
         result, state = run_prepare(project, home, "default", "")
         _assert_fail(result, state, name)

@@ -50,7 +50,7 @@ def run_sandbox(
 
     HOME is left at the real user home so microsandbox keeps its state
     dir (~/.microsandbox) at a socket-length-safe path; host config reads
-    are isolated via the TAU_ENV_FILE/TAU_CONFIG_DIR/TAU_AGENTS_DIR
+    are isolated via the OPENCODE_SANDBOX_ENV_FILE/OPENCODE_SANDBOX_CONFIG_DIR
     overrides into the per-test home_dir.
 
     set_home=True additionally points HOME itself at home_dir: the exact
@@ -61,10 +61,9 @@ def run_sandbox(
     socket-length-safe path.
     """
     env = os.environ.copy()
-    env["TAU_IMAGE"] = TEST_IMAGE_REF
-    env["TAU_ENV_FILE"] = str(home_dir / ".env-host")
-    env["TAU_CONFIG_DIR"] = str(home_dir / ".tau-host")
-    env["TAU_AGENTS_DIR"] = str(home_dir / ".agents-host")
+    env["OPENCODE_SANDBOX_IMAGE"] = TEST_IMAGE_REF
+    env["OPENCODE_SANDBOX_ENV_FILE"] = str(home_dir / ".env-host")
+    env["OPENCODE_SANDBOX_CONFIG_DIR"] = str(home_dir / ".opencode-host")
     if set_home:
         env["HOME"] = str(home_dir)
         # Preserve an explicitly inherited MSB_HOME instead of clobbering it;
@@ -129,9 +128,9 @@ class TestSandboxBasics:
         assert result.returncode == 0, f"guest DNS failed: {result.stderr}"
         assert "github.com" in result.stdout
 
-    def test_tau_is_installed(self, tmp_path, sandbox_home):
+    def test_opencode_is_installed(self, tmp_path, sandbox_home):
         """The declared agent is present inside the sandbox."""
-        result = run_sandbox(tmp_path, sandbox_home, ["tau", "--version"])
+        result = run_sandbox(tmp_path, sandbox_home, ["opencode", "--version"])
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert result.stdout.strip()
 
@@ -150,9 +149,9 @@ class TestPersistence:
     """Persistent volume and ephemeral rootfs contract."""
 
     def test_home_volume_persists_across_runs(self, tmp_path, sandbox_home):
-        result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", "echo keep > /home/tau/persist.txt"])
+        result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", "echo keep > /home/opencode/persist.txt"])
         assert result.returncode == 0
-        result = run_sandbox(tmp_path, sandbox_home, ["cat", "/home/tau/persist.txt"])
+        result = run_sandbox(tmp_path, sandbox_home, ["cat", "/home/opencode/persist.txt"])
         assert result.returncode == 0
         assert result.stdout.strip() == "keep"
 
@@ -164,11 +163,11 @@ class TestPersistence:
             [
                 "sh",
                 "-c",
-                "echo canonical > /var/lib/tau-sandbox/sessions/collision && "
-                "rm /home/tau/.tau/sessions && "
-                "mkdir /home/tau/.tau/sessions && "
-                "echo legacy > /home/tau/.tau/sessions/legacy-session && "
-                "echo stale > /home/tau/.tau/sessions/collision",
+                "echo canonical > /var/lib/opencode-sandbox/sessions/collision && "
+                "rm /home/opencode/.local/share/opencode/storage && "
+                "mkdir /home/opencode/.local/share/opencode/storage && "
+                "echo legacy > /home/opencode/.local/share/opencode/storage/legacy-session && "
+                "echo stale > /home/opencode/.local/share/opencode/storage/collision",
             ],
         )
         assert result.returncode == 0, result.stderr
@@ -179,26 +178,26 @@ class TestPersistence:
             [
                 "sh",
                 "-c",
-                "test -L /home/tau/.tau/sessions && "
-                "cat /home/tau/.tau/sessions/legacy-session && "
-                "cat /home/tau/.tau/sessions/collision",
+                "test -L /home/opencode/.local/share/opencode/storage && "
+                "cat /home/opencode/.local/share/opencode/storage/legacy-session && "
+                "cat /home/opencode/.local/share/opencode/storage/collision",
             ],
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.splitlines() == ["legacy", "canonical"]
 
     def test_rootfs_is_ephemeral(self, tmp_path, sandbox_home):
-        """Rootfs writes vanish on the next run; /home/tau writes survive.
+        """Rootfs writes vanish on the next run; /home/opencode writes survive.
 
         /tmp is used because /etc is not writable by the unprivileged
         sandbox user — both are equally ephemeral for this check."""
         result = run_sandbox(
-            tmp_path, sandbox_home, ["sh", "-c", "echo x > /tmp/root-marker.txt && echo x > /home/tau/home-marker.txt"]
+            tmp_path, sandbox_home, ["sh", "-c", "echo x > /tmp/root-marker.txt && echo x > /home/opencode/home-marker.txt"]
         )
         assert result.returncode == 0
         result = run_sandbox(
             tmp_path, sandbox_home,
-            ["sh", "-c", "test -f /tmp/root-marker.txt && echo SURVIVED || echo GONE; test -f /home/tau/home-marker.txt && echo HOME-OK || echo HOME-GONE"],
+            ["sh", "-c", "test -f /tmp/root-marker.txt && echo SURVIVED || echo GONE; test -f /home/opencode/home-marker.txt && echo HOME-OK || echo HOME-GONE"],
         )
         assert result.returncode == 0
         assert "GONE" in result.stdout and "HOME-OK" in result.stdout
@@ -212,8 +211,8 @@ class TestPersistence:
         try:
             (proj_a / ".env").write_text("")
             (proj_b / ".env").write_text("")
-            r1 = run_sandbox(proj_a, sandbox_home, ["sh", "-c", "echo secret-a > /home/tau/data.txt"])
-            r2 = run_sandbox(proj_b, sandbox_home, ["sh", "-c", "cat /home/tau/data.txt 2>&1 || true"])
+            r1 = run_sandbox(proj_a, sandbox_home, ["sh", "-c", "echo secret-a > /home/opencode/data.txt"])
+            r2 = run_sandbox(proj_b, sandbox_home, ["sh", "-c", "cat /home/opencode/data.txt 2>&1 || true"])
             assert r1.returncode == 0 and r2.returncode == 0
             assert "secret-a" not in r2.stdout
         finally:
@@ -232,65 +231,68 @@ class TestHostConfigIsolation:
     """Host config seeds writable project state; credentials stay project-local."""
 
     def test_project_credentials_live_in_the_home_volume(self, tmp_path, sandbox_home):
-        """Host credentials.json never seeds the guest, and a project-local
+        """Host auth.json never seeds the guest, and a project-local
         credential written inside the sandbox persists in the home volume
         across runs while the host file stays untouched."""
-        tau_host = sandbox_home / ".tau-host"
-        tau_host.mkdir()
-        host_credentials = tau_host / "credentials.json"
-        host_credentials.write_text('{"openrouter": "sk-host-token"}\n')
+        config_host = sandbox_home / ".opencode-host"
+        config_host.mkdir()
+        host_credentials = config_host / "auth.json"
+        host_credentials.write_text('{"openrouter": {"type": "api", "key": "sk-host-token"}}\n')
         result = run_sandbox(
             tmp_path,
             sandbox_home,
             [
                 "sh",
                 "-c",
-                "test ! -e /home/tau/.tau/credentials.json && "
-                "mkdir -p /home/tau/.tau && "
-                "printf '%s\\n' '{\"openrouter\": \"sk-project-token\"}' > "
-                "/home/tau/.tau/credentials.json",
+                "test ! -e /home/opencode/.local/share/opencode/auth.json && "
+                "mkdir -p /home/opencode/.local/share/opencode && "
+                "printf '%s\\n' '{\"openrouter\": {\"type\": \"api\", \"key\": \"sk-project-token\"}}' > "
+                "/home/opencode/.local/share/opencode/auth.json",
             ],
         )
         assert result.returncode == 0, result.stderr
         assert host_credentials.read_text() == '{"openrouter": "sk-host-token"}\n'
         result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/credentials.json"]
+            tmp_path, sandbox_home, ["cat", "/home/opencode/.local/share/opencode/auth.json"]
         )
         assert result.returncode == 0, result.stderr
         assert "sk-project-token" in result.stdout
 
-    def test_tau_writes_credentials_into_the_project_volume(self, tmp_path, sandbox_home):
-        """Tau's stock credential writer updates the project-local file in the
-        persistent home volume; the host credential file is never written."""
-        tau_host = sandbox_home / ".tau-host"
-        tau_host.mkdir()
-        host_credentials = tau_host / "credentials.json"
-        host_credentials.write_text('{"openrouter": "host-token"}\n')
+    def test_guest_credential_write_updates_the_project_volume(self, tmp_path, sandbox_home):
+        """A guest-side credential write updates the project-local file in
+        the persistent home volume (opencode owns the file's format and
+        write behavior); the host credential file is never written."""
+        config_host = sandbox_home / ".opencode-host"
+        config_host.mkdir()
+        host_credentials = config_host / "auth.json"
+        host_credentials.write_text('{"openrouter": {"type": "api", "key": "host-token"}}\n')
         script = (
-            "from tau_coding.credentials import FileCredentialStore; "
-            "FileCredentialStore().set('openrouter', 'new-token')"
+            "import json, pathlib; "
+            "p = pathlib.Path('/home/opencode/.local/share/opencode/auth.json'); "
+            "p.parent.mkdir(parents=True, exist_ok=True); "
+            "p.write_text(json.dumps({'openrouter': {'type': 'api', 'key': 'new-token'}}))"
         )
         result = run_sandbox(tmp_path, sandbox_home, ["python", "-c", script])
         assert result.returncode == 0, result.stderr
         assert host_credentials.read_text() == '{"openrouter": "host-token"}\n'
         result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/credentials.json"]
+            tmp_path, sandbox_home, ["cat", "/home/opencode/.local/share/opencode/auth.json"]
         )
         assert result.returncode == 0, result.stderr
         assert "new-token" in result.stdout
 
     def test_host_resources_refresh_each_start_and_are_writable(self, tmp_path, sandbox_home):
-        tau_host = sandbox_home / ".tau-host"
-        tau_host.mkdir()
-        (tau_host / "skills").mkdir()
-        (tau_host / "skills" / "hello.md").write_text("# hello\n")
+        config_host = sandbox_home / ".opencode-host"
+        config_host.mkdir()
+        (config_host / "skills").mkdir()
+        (config_host / "skills" / "hello.md").write_text("# hello\n")
         linked_skill = sandbox_home / "linked-skill"
         linked_skill.mkdir()
         (linked_skill / "SKILL.md").write_text("# linked\n")
-        (tau_host / "skills" / "linked").symlink_to(
+        (config_host / "skills" / "linked").symlink_to(
             linked_skill, target_is_directory=True
         )
-        settings = tau_host / "settings.json"
+        settings = config_host / "settings.json"
         settings.write_text('{"host": true}\n')
 
         result = run_sandbox(
@@ -299,15 +301,15 @@ class TestHostConfigIsolation:
             [
                 "sh",
                 "-c",
-                "test -w /home/tau/.tau && "
-                "test -L /home/tau/.tau/sessions && "
-                "test -L /home/tau/.tau/logs && "
-                "test -f /home/tau/.tau/skills/hello.md && "
-                "test -f /home/tau/.tau/skills/linked/SKILL.md && "
-                "test ! -L /home/tau/.tau/skills/linked && "
-                "cat /home/tau/.tau/settings.json && "
-                "printf '{\"sandbox\": true}\\n' > /home/tau/.tau/settings.json && "
-                "printf 'local\\n' > /home/tau/.tau/sandbox-only",
+                "test -w /home/opencode/.config/opencode && "
+                "test -L /home/opencode/.local/share/opencode/storage && "
+                "test -L /home/opencode/.local/share/opencode/log && "
+                "test -f /home/opencode/.config/opencode/skills/hello.md && "
+                "test -f /home/opencode/.config/opencode/skills/linked/SKILL.md && "
+                "test ! -L /home/opencode/.config/opencode/skills/linked && "
+                "cat /home/opencode/.config/opencode/settings.json && "
+                "printf '{\"sandbox\": true}\\n' > /home/opencode/.config/opencode/settings.json && "
+                "printf 'local\\n' > /home/opencode/.config/opencode/sandbox-only",
             ],
         )
         assert result.returncode == 0, result.stderr
@@ -315,18 +317,18 @@ class TestHostConfigIsolation:
         assert settings.read_text() == '{"host": true}\n'
 
         settings.write_text('{"host": "changed"}\n')
-        (tau_host / "skills" / "hello.md").unlink()
-        (tau_host / "skills" / "new.md").write_text("# new\n")
+        (config_host / "skills" / "hello.md").unlink()
+        (config_host / "skills" / "new.md").write_text("# new\n")
         result = run_sandbox(
             tmp_path,
             sandbox_home,
             [
                 "sh",
                 "-c",
-                "cat /home/tau/.tau/settings.json && "
-                "test -f /home/tau/.tau/skills/new.md && "
-                "test ! -e /home/tau/.tau/skills/hello.md && "
-                "test -f /home/tau/.tau/sandbox-only",
+                "cat /home/opencode/.config/opencode/settings.json && "
+                "test -f /home/opencode/.config/opencode/skills/new.md && "
+                "test ! -e /home/opencode/.config/opencode/skills/hello.md && "
+                "test -f /home/opencode/.config/opencode/sandbox-only",
             ],
         )
         assert result.returncode == 0, result.stderr
@@ -334,17 +336,18 @@ class TestHostConfigIsolation:
         assert settings.read_text() == '{"host": "changed"}\n'
 
     def test_provider_settings_support_atomic_replacement(self, tmp_path, sandbox_home):
-        """Regression: a file bind mount returns EBUSY when Tau renames its temp
-        file over providers.json. The bootstrapped local copy must be replaceable."""
-        tau_host = sandbox_home / ".tau-host"
-        tau_host.mkdir()
-        providers = tau_host / "providers.json"
+        """Regression: a file bind mount returns EBUSY when a guest process renames
+        its temp file over providers.json. The bootstrapped local copy must be
+        replaceable."""
+        config_host = sandbox_home / ".opencode-host"
+        config_host.mkdir()
+        providers = config_host / "providers.json"
         providers.write_text('{"source": "host"}\n')
         command = (
-            "temp=$(mktemp /home/tau/.tau/.providers.json.XXXXXX.tmp) && "
+            "temp=$(mktemp /home/opencode/.config/opencode/.providers.json.XXXXXX.tmp) && "
             "printf '{\"source\": \"sandbox\"}\\n' > \"$temp\" && "
-            "mv \"$temp\" /home/tau/.tau/providers.json && "
-            "cat /home/tau/.tau/providers.json"
+            "mv \"$temp\" /home/opencode/.config/opencode/providers.json && "
+            "cat /home/opencode/.config/opencode/providers.json"
         )
 
         result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", command])
@@ -353,54 +356,21 @@ class TestHostConfigIsolation:
         assert providers.read_text() == '{"source": "host"}\n'
 
         result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/providers.json"]
+            tmp_path, sandbox_home, ["cat", "/home/opencode/.config/opencode/providers.json"]
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == '{"source": "sandbox"}'
 
-    def test_host_agents_are_readonly(self, tmp_path, sandbox_home):
-        agents_host = sandbox_home / ".agents-host"
-        agents_host.mkdir()
-        skill = agents_host / "AGENTS.md"
-        skill.write_text("host instructions\n")
-        result = run_sandbox(
-            tmp_path,
-            sandbox_home,
-            ["sh", "-c", "! echo changed > /home/tau/.agents/AGENTS.md && echo PROTECTED"],
-        )
-        assert result.returncode == 0, result.stderr
-        assert "PROTECTED" in result.stdout
-        assert skill.read_text() == "host instructions\n"
-
-    def test_trust_store_is_project_local(self, tmp_path, sandbox_home):
-        tau_host = sandbox_home / ".tau-host"
-        tau_host.mkdir()
-        host_trust = tau_host / "trust.json"
-        host_trust.write_text('{"host": true}\n')
-        result = run_sandbox(
-            tmp_path,
-            sandbox_home,
-            [
-                "sh",
-                "-c",
-                "test ! -e /home/tau/.tau/trust.json && "
-                "echo sandbox > /home/tau/.tau/trust.json",
-            ],
-        )
-        assert result.returncode == 0, result.stderr
-        result = run_sandbox(
-            tmp_path, sandbox_home, ["cat", "/home/tau/.tau/trust.json"]
-        )
-        assert result.returncode == 0
-        assert result.stdout.strip() == "sandbox"
-        assert host_trust.read_text() == '{"host": true}\n'
-
     def test_sessions_and_logs_are_isolated_and_persistent(self, tmp_path, sandbox_home):
-        tau_host = sandbox_home / ".tau-host"
-        (tau_host / "sessions").mkdir(parents=True)
-        (tau_host / "logs").mkdir()
-        (tau_host / "sessions" / "host-session").write_text("host\n")
-        (tau_host / "logs" / "host-log").write_text("host\n")
+        """Session storage and logs live on per-project volumes: guest
+        writes persist across runs and never land in the host config
+        directory, and a host data directory is never mounted."""
+        config_host = sandbox_home / ".opencode-host"
+        config_host.mkdir()
+        (config_host / "settings.json").write_text("{}\n")
+        data_host = sandbox_home / ".opencode-data-host"
+        (data_host / "storage").mkdir(parents=True)
+        (data_host / "storage" / "host-session").write_text("host\n")
 
         result = run_sandbox(
             tmp_path,
@@ -408,10 +378,9 @@ class TestHostConfigIsolation:
             [
                 "sh",
                 "-c",
-                "test ! -e /home/tau/.tau/sessions/host-session && "
-                "test ! -e /home/tau/.tau/logs/host-log && "
-                "echo sandbox > /home/tau/.tau/sessions/sandbox-session && "
-                "echo sandbox > /home/tau/.tau/logs/sandbox-log",
+                "test ! -e /home/opencode/.local/share/opencode/storage/host-session && "
+                "echo sandbox > /home/opencode/.local/share/opencode/storage/sandbox-session && "
+                "echo sandbox > /home/opencode/.local/share/opencode/log/sandbox-log",
             ],
         )
         assert result.returncode == 0, result.stderr
@@ -421,19 +390,20 @@ class TestHostConfigIsolation:
             [
                 "sh",
                 "-c",
-                "cat /home/tau/.tau/sessions/sandbox-session && "
-                "cat /home/tau/.tau/logs/sandbox-log",
+                "cat /home/opencode/.local/share/opencode/storage/sandbox-session && "
+                "cat /home/opencode/.local/share/opencode/log/sandbox-log",
             ],
         )
         assert result.returncode == 0
         assert result.stdout.count("sandbox") == 2
-        assert not (tau_host / "sessions" / "sandbox-session").exists()
-        assert not (tau_host / "logs" / "sandbox-log").exists()
+        assert not (config_host / "sessions").exists()
+        assert not (config_host / "logs").exists()
+        assert not (data_host / "storage" / "sandbox-session").exists()
 
     def test_sandbox_reference_is_immutable_and_does_not_overwrite_host(self, tmp_path, sandbox_home):
-        tau_host = sandbox_home / ".tau-host"
-        tau_host.mkdir()
-        host_append = tau_host / "APPEND_SYSTEM.md"
+        config_host = sandbox_home / ".opencode-host"
+        config_host.mkdir()
+        host_append = config_host / "APPEND_SYSTEM.md"
         host_append.write_text("HOST_APPEND\n")
         result = run_sandbox(
             tmp_path,
@@ -441,9 +411,9 @@ class TestHostConfigIsolation:
             [
                 "sh",
                 "-c",
-                "grep -q 'microsandbox microVM' /etc/tau-sandbox/APPEND_SYSTEM.md && "
-                "! echo changed > /etc/tau-sandbox/APPEND_SYSTEM.md && "
-                "cat /home/tau/.tau/APPEND_SYSTEM.md",
+                "grep -q 'microsandbox microVM' /etc/opencode-sandbox/APPEND_SYSTEM.md && "
+                "! echo changed > /etc/opencode-sandbox/APPEND_SYSTEM.md && "
+                "cat /home/opencode/.config/opencode/APPEND_SYSTEM.md",
             ],
         )
         assert result.returncode == 0, result.stderr
@@ -457,7 +427,7 @@ class TestReset:
 
     @skip_without_msb
     def test_reset_removes_volume(self, tmp_path, sandbox_home):
-        result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", "echo x > /home/tau/persist.txt"])
+        result = run_sandbox(tmp_path, sandbox_home, ["sh", "-c", "echo x > /home/opencode/persist.txt"])
         assert result.returncode == 0
         volumes = volume_names_for(str(tmp_path))
         ls = subprocess.run(["msb", "volume", "ls"], capture_output=True, text=True)
@@ -515,12 +485,13 @@ class TestProjectSecretRuntimeBoundary:
         """Representative reserved-name categories are rejected before any
         sandbox boots.
 
-        Exact runner-owned names (PATH) and the TAU_ prefix (which covers
-        the entrypoint's TAU_ENTRYPOINT_ scratch namespace) belong to the
+        Exact runner-owned names (PATH) and the OPENCODE_SANDBOX_ prefix
+        (which covers the entrypoint's OPENCODE_SANDBOX_ENTRYPOINT_ scratch
+        namespace) belong to the
         shell and launcher: a project secret that took any of them would
         let the runtime overwrite process-startup state, so the launcher
         must reject them before image, environment, and mount work."""
-        reserved_names = ("PATH", "TAU_ENTRYPOINT_STAGE", "BASH_ENV")
+        reserved_names = ("PATH", "OPENCODE_SANDBOX_ENTRYPOINT_STAGE", "BASH_ENV")
         for index, name in enumerate(reserved_names):
             env_text = f"{name}=dummy-project-api-key-123\n"
             yaml_text = (
