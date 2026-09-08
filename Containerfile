@@ -1,6 +1,6 @@
 FROM archlinux:latest
 
-# Per-project system packages, passed by run.sh when a .tau-packages file
+# Per-project system packages, passed by run.sh when a .opencode-packages file
 # exists in the project root. Requires explicit user approval at runtime.
 ARG EXTRA_PACKAGES=""
 
@@ -16,51 +16,56 @@ RUN pacman -Syu --noconfirm && \
       exit 1; } && \
     pacman -Scc --noconfirm
 
-# Tau pinned to a commit of the naripok/tau fork. The pinned commit carries
-# the cross-process OAuth refresh lock that keeps a rotating refresh token
-# spent at most once across sandboxes sharing one project volume. The sandbox
-# image is the upgrade vehicle:
-# rebuild the image (make build) to update Tau or system packages.
-# Per-project package images embed a hash of this file and config/;
+# opencode pinned to a release version. The sandbox image is the upgrade
+# vehicle: rebuild the image (make build) to update opencode or system
+# packages. Per-project package images embed a hash of this file and config/;
 # changing either invalidates them and triggers an approval-gated rebuild
 # on the project's next run.
-# Installed into a dedicated venv: Arch's python-pip is PEP 668
-# externally-managed, so system-wide pip installs are rejected.
-ARG TAU_REF=9d2ecd0f2615cb061fee1e858f72a9a34f8045c5
-RUN python -m venv /opt/tau && \
-    /opt/tau/bin/pip install --no-cache-dir "git+https://github.com/naripok/tau@${TAU_REF}"
+# The release asset follows the build architecture (glibc builds; the musl
+# variants are for musl systems and never apply to Arch).
+ARG OPENCODE_VERSION=1.18.29
+RUN case "$(uname -m)" in \
+      x86_64) OPENCODE_ARCH=x64 ;; \
+      aarch64) OPENCODE_ARCH=arm64 ;; \
+      *) echo "Error: unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    install -d /opt/opencode/bin && \
+    curl -fsSL "https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" \
+      | tar -xz -C /opt/opencode/bin
 
 # Sandbox user. The microVM is booted with --user 1000:1000 and mounts are
 # identity-virtualized by microsandbox: writes land on the host as the host
 # user that owns the mounted directory.
-RUN useradd -m -u 1000 -s /bin/bash tau
+RUN useradd -m -u 1000 -s /bin/bash opencode
 
 # Static sandbox files: run.sh overlays the current environment reference and
 # host-config bootstrap sources read-only at runtime; the entrypoint seeds each
 # persistent home once.
-RUN mkdir -p /etc/tau-sandbox/bootstrap/tau \
-      /var/lib/tau-sandbox/sessions /var/lib/tau-sandbox/logs && \
-    chown -R tau:tau /var/lib/tau-sandbox
-COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md
-COPY config/.bashrc /etc/tau-sandbox/.bashrc
+RUN mkdir -p /etc/opencode-sandbox/bootstrap/opencode \
+      /var/lib/opencode-sandbox/sessions /var/lib/opencode-sandbox/logs && \
+    chown -R opencode:opencode /var/lib/opencode-sandbox
+COPY config/APPEND_SYSTEM.md /etc/opencode-sandbox/APPEND_SYSTEM.md
+COPY config/opencode.json /etc/opencode-sandbox/opencode.json
+COPY config/.bashrc /etc/opencode-sandbox/.bashrc
 
-# Tau wrapper: always injects the immutable sandbox reference.
-COPY config/tau-wrapper.py /usr/local/bin/tau
+# opencode wrapper: always merges the immutable sandbox config, which injects
+# the sandbox context document as an instructions entry.
+COPY config/opencode-wrapper.sh /usr/local/bin/opencode
 
 # Entrypoint: initializes the persistent home, sets up the environment, and
 # then execs the user command.
 COPY config/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 755 /usr/local/bin/tau /usr/local/bin/entrypoint.sh && \
+RUN chmod 755 /usr/local/bin/opencode /usr/local/bin/entrypoint.sh && \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 
-ENV HOME=/home/tau
+ENV HOME=/home/opencode
 ENV TERM=xterm-256color
 ENV COLORTERM=truecolor
-ENV USER=tau
+ENV USER=opencode
 
 # The VM runs as this user by default; run.sh also passes --user 1000:1000
 # explicitly so the identity does not depend on image defaults.
-USER tau
+USER opencode
 
 WORKDIR /workspace
 

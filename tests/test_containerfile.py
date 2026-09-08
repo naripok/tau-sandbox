@@ -1,6 +1,6 @@
 """Unit tests for the Containerfile.
 
-Prove the image contract the sandbox depends on: a pinned Tau install,
+Prove the image contract the sandbox depends on: a pinned opencode install,
 the declared tool set, the entrypoint, the unprivileged user, and support
 for per-project extra packages via ARG EXTRA_PACKAGES.
 """
@@ -46,31 +46,40 @@ def test_containerfile_has_required_tool_packages():
         assert pkg in text
 
 
-def test_containerfile_installs_tau():
-    assert "github.com/naripok/tau" in _text()
-
-
-def test_containerfile_pins_tau_ref():
+def test_containerfile_pins_opencode_version():
     # The image is the upgrade vehicle; builds must be deterministic.
-    assert "ARG TAU_REF=" in _text()
+    assert "ARG OPENCODE_VERSION=1.18.29" in _text()
 
 
-def test_containerfile_pins_tau_ref_with_refresh_lock():
-    # The pinned commit carries the cross-process OAuth refresh lock.
-    assert "ARG TAU_REF=9bcad9da418622985fb4f0a644e29fa5471a133d" in _text()
+def test_containerfile_installs_opencode_from_a_pinned_release():
+    # The binary comes from the pinned GitHub release, not an unpinned
+    # installer script.
+    text = _text()
+    assert "github.com/sst/opencode/releases/download" in text
+    assert "opencode.ai/install" not in text
+
+
+def test_containerfile_selects_the_release_asset_by_build_architecture():
+    # The release asset is architecture-specific; the build maps uname -m to
+    # the glibc asset so arm hosts build a working image too.
+    text = _text()
+    assert "uname -m" in text
+    assert "opencode-linux-${OPENCODE_ARCH}.tar.gz" in text
+    assert "x86_64) OPENCODE_ARCH=x64" in text
+    assert "aarch64) OPENCODE_ARCH=arm64" in text
 
 
 def test_containerfile_has_launchers():
     text = _text()
     assert "COPY config/entrypoint.sh" in text
-    assert "COPY config/tau-wrapper.py /usr/local/bin/tau" in text
+    assert "COPY config/opencode-wrapper.sh /usr/local/bin/opencode" in text
     assert 'ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' in text
 
 
 def test_containerfile_has_unprivileged_user_and_no_privileged_bits():
     text = _text()
-    assert "useradd -m -u 1000 -s /bin/bash tau" in text
-    assert "USER tau" in text
+    assert "useradd -m -u 1000 -s /bin/bash opencode" in text
+    assert "USER opencode" in text
     assert "-perm /6000" in text
     assert "chmod a-s" in text
 
@@ -88,10 +97,19 @@ def test_containerfile_has_build_error_handling():
 
 def test_containerfile_copies_sandbox_config():
     text = _text()
-    assert "mkdir -p /etc/tau-sandbox/bootstrap/tau" in text
-    assert "/var/lib/tau-sandbox/sessions" in text
-    assert "chown -R tau:tau /var/lib/tau-sandbox" in text
-    assert "COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md" in text
-    assert "COPY config/.bashrc /etc/tau-sandbox/.bashrc" in text
-    # Credentials are project-local; the shared host mount dir is gone.
-    assert "/etc/tau-sandbox/shared" not in text
+    assert "mkdir -p /etc/opencode-sandbox/bootstrap/opencode" in text
+    assert "/var/lib/opencode-sandbox/sessions" in text
+    assert "chown -R opencode:opencode /var/lib/opencode-sandbox" in text
+    assert "COPY config/APPEND_SYSTEM.md /etc/opencode-sandbox/APPEND_SYSTEM.md" in text
+    assert "COPY config/opencode.json /etc/opencode-sandbox/opencode.json" in text
+    assert "COPY config/.bashrc /etc/opencode-sandbox/.bashrc" in text
+
+
+def test_containerfile_has_no_tau_leftovers():
+    # The fork replaces tau end to end; no tau install step survives.
+    text = _text()
+    assert "naripok/tau" not in text
+    assert "TAU_REF" not in text
+    assert "tau-wrapper" not in text
+    assert "/usr/local/bin/tau" not in text
+    assert "/home/tau" not in text

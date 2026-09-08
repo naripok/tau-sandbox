@@ -7,14 +7,14 @@ bootstrapping, and invariant environment-reference injection.
 The entrypoint namespace guard parses config/entrypoint.sh into a real
 Bash AST (tree-sitter) and enforces a bounded dialect rather than
 chasing every Bash writer form: every variable the entrypoint creates,
-declares, loops over, or unsets must use the reserved TAU_ENTRYPOINT_
-prefix (enumerated guest names are allowed only as `export NAME=...`
-assignments), the only permitted `read` is the exact manifest streaming
-loop, `{NAME}` descriptor allocations must use the prefix too, and
-everything else that writes — writer builtins, Bash reserved words in
-command position, dynamic command words, arithmetic, namerefs, unprefixed
-or dynamic brace words abutting a redirect operator — fails the whole file
-closed. That the allowed dialect actually boots
+declares, loops over, or unsets must use the reserved
+OPENCODE_SANDBOX_ENTRYPOINT_ prefix (enumerated guest names are allowed
+only as `export NAME=...` assignments), the only permitted `read` is the
+exact manifest streaming loop, `{NAME}` descriptor allocations must use
+the prefix too, and everything else that writes — writer builtins, Bash
+reserved words in command position, dynamic command words, arithmetic,
+namerefs, unprefixed or dynamic brace words abutting a redirect operator
+— fails the whole file closed. That the allowed dialect actually boots
 the sandbox is verified end-to-end by the integration suite; this guard
 only proves the entrypoint stays inside the dialect.
 """
@@ -24,9 +24,6 @@ import pathlib
 import re
 import shlex
 import subprocess
-import sys
-import threading
-import time
 
 import pytest
 import tree_sitter_bash
@@ -37,10 +34,10 @@ CONFIG_DIR = REPO_ROOT / "config"
 
 GUEST_EXPORT_VARIABLES = frozenset(
     """HOME SHELL TERM COLORTERM USER LOGNAME PATH PYTHONUSERBASE
-    NPM_CONFIG_PREFIX PIP_USER TAU_NO_UPDATE_CHECK""".split()
+    NPM_CONFIG_PREFIX PIP_USER OPENCODE_DISABLE_AUTOUPDATE""".split()
 )
 
-ENTRYPOINT_PREFIX = "TAU_ENTRYPOINT_"
+ENTRYPOINT_PREFIX = "OPENCODE_SANDBOX_ENTRYPOINT_"
 
 
 def _read(name: str) -> str:
@@ -81,7 +78,7 @@ _BLOCKED_WRITERS = frozenset(
 
 _DECLARATION_KEYWORDS = frozenset({"export", "local", "declare", "readonly", "typeset"})
 _REDIRECT_TYPES = frozenset({"file_redirect", "heredoc_redirect", "herestring_redirect"})
-_MANIFEST_TARGET_RE = re.compile(r"^TAU_ENTRYPOINT_[A-Za-z0-9_]+$")
+_MANIFEST_TARGET_RE = re.compile(r"^OPENCODE_SANDBOX_ENTRYPOINT_[A-Za-z0-9_]+$")
 # One statically readable target: NAME, NAME=value, or subscripted NAME.
 _TARGET_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])*(?:=.*)?$")
 _UNSET_OPTION_RE = re.compile(r"-[fnv]+")
@@ -144,8 +141,8 @@ def _benign_missing(node) -> bool:
 
 def _manifest_while(while_node) -> bool:
     """True only for the exact manifest loop the entrypoint is allowed to
-    use: `while IFS= read -r TAU_ENTRYPOINT_*; do ...; done <
-    "$TAU_ENTRYPOINT_SYNC_MANIFEST"` — one empty `IFS=`, the unquoted
+    use: `while IFS= read -r OPENCODE_SANDBOX_ENTRYPOINT_*; do ...; done <
+    "$OPENCODE_SANDBOX_ENTRYPOINT_SYNC_MANIFEST"` — one empty `IFS=`, the unquoted
     `read`, the single option `-r`, one prefixed target, and exactly one
     redirect, the input redirect from the manifest, and the `while` keyword
     itself (tree-sitter parses `until` as a while_statement, but an until
@@ -191,7 +188,7 @@ def _manifest_while(while_node) -> bool:
         len(rkids) == 2
         and _node_text(rkids[0]) == "<"
         and dest is not None
-        and _node_text(dest) == '"$TAU_ENTRYPOINT_SYNC_MANIFEST"'
+        and _node_text(dest) == '"$OPENCODE_SANDBOX_ENTRYPOINT_SYNC_MANIFEST"'
     )
 
 
@@ -411,7 +408,7 @@ def _manifest_prune_block(text: str) -> str:
     start = next(
         i
         for i, line in enumerate(lines)
-        if 'if [ -f "$TAU_ENTRYPOINT_SYNC_MANIFEST" ]; then' in line
+        if 'if [ -f "$OPENCODE_SANDBOX_ENTRYPOINT_SYNC_MANIFEST" ]; then' in line
     )
     end = next(i for i in range(start + 1, len(lines)) if lines[i] == "fi")
     return "\n".join(lines[start : end + 1]) + "\n"
@@ -421,26 +418,26 @@ def _run_manifest_prune(
     tmp_path: pathlib.Path, manifest: bytes, bootstrap_names: tuple[str, ...] = ()
 ) -> pathlib.Path:
     """Run the entrypoint manifest-pruning block against a temp environment."""
-    taudir = tmp_path / "taudir"
+    configdir = tmp_path / "configdir"
     bootstrap = tmp_path / "bootstrap"
-    taudir.mkdir()
+    configdir.mkdir()
     bootstrap.mkdir()
     for name in ("kept.txt", "stale.txt", "stray.txt"):
-        (taudir / name).write_text("x")
+        (configdir / name).write_text("x")
     for name in bootstrap_names:
         (bootstrap / name).write_text("x")
-    (taudir / ".host-config-synced").write_bytes(manifest)
+    (configdir / ".host-config-synced").write_bytes(manifest)
     script = "\n".join(
         [
             "set -euo pipefail",
-            f"TAU_ENTRYPOINT_DIR={shlex.quote(str(taudir))}",
-            f"TAU_ENTRYPOINT_BOOTSTRAP_DIR={shlex.quote(str(bootstrap))}",
-            'TAU_ENTRYPOINT_SYNC_MANIFEST="$TAU_ENTRYPOINT_DIR/.host-config-synced"',
+            f"OPENCODE_SANDBOX_ENTRYPOINT_CONFIG_DIR={shlex.quote(str(configdir))}",
+            f"OPENCODE_SANDBOX_ENTRYPOINT_BOOTSTRAP_DIR={shlex.quote(str(bootstrap))}",
+            'OPENCODE_SANDBOX_ENTRYPOINT_SYNC_MANIFEST="$OPENCODE_SANDBOX_ENTRYPOINT_CONFIG_DIR/.host-config-synced"',
             _manifest_prune_block(_read("entrypoint.sh")),
         ]
     )
     subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
-    return taudir
+    return configdir
 
 
 # --- .bashrc ---
@@ -451,7 +448,7 @@ def test_bashrc_exists():
 
 
 def test_bashrc_sets_prompt():
-    assert "PS1=" in _read(".bashrc")
+    assert "opencode-sandbox" in _read(".bashrc")
 
 
 def test_bashrc_sets_local_bin_in_path():
@@ -482,11 +479,10 @@ def test_append_system_doc_describes_filesystem():
     text = _read("APPEND_SYSTEM.md")
     for path in (
         "/workspace",
-        "/home/tau",
-        "/home/tau/.tau",
-        "/home/tau/.tau/sessions",
-        "/home/tau/.tau/logs",
-        "/home/tau/.agents",
+        "/home/opencode",
+        "/home/opencode/.config/opencode",
+        "/home/opencode/.local/share/opencode/storage",
+        "/home/opencode/.local/share/opencode/log",
         "/tmp",
     ):
         assert path in text
@@ -499,7 +495,7 @@ def test_append_system_doc_describes_ephemeral_rootfs():
 
 def test_append_system_doc_lists_installed_tools():
     text = _read("APPEND_SYSTEM.md")
-    for tool in ("Python", "uv", "Node.js", "tau", "git", "ast-grep", "ripgrep"):
+    for tool in ("Python", "uv", "Node.js", "opencode", "git", "ast-grep", "ripgrep"):
         assert tool in text
 
 
@@ -510,13 +506,13 @@ def test_append_system_doc_describes_security():
 
 
 def test_append_system_doc_describes_packages_file():
-    assert ".tau-packages" in _read("APPEND_SYSTEM.md")
+    assert ".opencode-packages" in _read("APPEND_SYSTEM.md")
 
 
 def test_append_system_doc_describes_lan_host_egress_rule():
     text = _read("APPEND_SYSTEM.md")
     assert "192.168.15.9" not in text
-    assert "TAU_LAN_HOSTS" in text
+    assert "OPENCODE_SANDBOX_LAN_HOSTS" in text
     assert "other private-network addresses are blocked" in text
 
 
@@ -525,8 +521,8 @@ def test_append_system_doc_describes_lan_host_egress_rule():
 # The exact manifest streaming loop, and its four single deviations proven
 # to revoke the exemption.
 _MANIFEST_LOOP = (
-    "while IFS= read -r TAU_ENTRYPOINT_X; do :\n"
-    'done < "$TAU_ENTRYPOINT_SYNC_MANIFEST"\n'
+    "while IFS= read -r OPENCODE_SANDBOX_ENTRYPOINT_X; do :\n"
+    'done < "$OPENCODE_SANDBOX_ENTRYPOINT_SYNC_MANIFEST"\n'
 )
 
 
@@ -539,7 +535,7 @@ def test_entrypoint_exists_and_executable():
 def test_entrypoint_internal_variables_use_reserved_prefix():
     """Prove the entrypoint stays inside the bounded dialect: every scratch
     assignment, declaration target, loop variable, and unset target uses the
-    reserved TAU_ENTRYPOINT_ prefix (enumerated guest names appear only as
+    reserved OPENCODE_SANDBOX_ENTRYPOINT_ prefix (enumerated guest names appear only as
     `export NAME=...`), the only `read` is the manifest streaming loop, and
     no blocked writer, reserved-word command, or dynamic command word
     appears anywhere, so entrypoint scratch state and the guest secret
@@ -554,12 +550,12 @@ def test_entrypoint_internal_variables_use_reserved_prefix():
         # exports, reader-only commands, and the manifest streaming loop.
         ("export HOME=/tmp/root\n", set()),
         ('export TERM="${TERM:-xterm-256color}"\n', set()),
-        ("TAU_ENTRYPOINT_X=1\n", set()),
-        ("local TAU_ENTRYPOINT_X=1\n", set()),
-        ("for TAU_ENTRYPOINT_X in *; do :\ndone\n", set()),
-        ("unset TAU_ENTRYPOINT_X\n", set()),
-        ('getopts "ab" TAU_ENTRYPOINT_X\n', set()),
-        ("printf '%s\\n' \"$TAU_ENTRYPOINT_X\"\n", set()),
+        ("OPENCODE_SANDBOX_ENTRYPOINT_X=1\n", set()),
+        ("local OPENCODE_SANDBOX_ENTRYPOINT_X=1\n", set()),
+        ("for OPENCODE_SANDBOX_ENTRYPOINT_X in *; do :\ndone\n", set()),
+        ("unset OPENCODE_SANDBOX_ENTRYPOINT_X\n", set()),
+        ('getopts "ab" OPENCODE_SANDBOX_ENTRYPOINT_X\n', set()),
+        ("printf '%s\\n' \"$OPENCODE_SANDBOX_ENTRYPOINT_X\"\n", set()),
         ("shopt -s dotglob nullglob\n", set()),
         ("grep -q x\n", set()),
         (_MANIFEST_LOOP, set()),
@@ -593,14 +589,14 @@ def test_entrypoint_internal_variables_use_reserved_prefix():
         ("exec {SNEAKY}<<SNEAKY_DOC\nx\nSNEAKY_DOC\n", {"SNEAKY"}),
         ("echo {SNEAKY}>/dev/null\n", {"SNEAKY"}),
         ("read {SNEAKY}< /dev/null\n", {"SNEAKY", "<blocked writer>"}),
-        ("exec {TAU_ENTRYPOINT_FD}>/dev/null\n", set()),
+        ("exec {OPENCODE_SANDBOX_ENTRYPOINT_FD}>/dev/null\n", set()),
         ("echo {SNEAKY} >out\n", set()),
         ("echo {SNEAKY}\n", set()),
         ("exec {SNEAKY x}>/dev/null\n", {"<dynamic command>"}),
         ("for ((SNEAKY=0; SNEAKY<3; SNEAKY++)); do :\ndone\n", {"SNEAKY", "<blocked writer>"}),
         ("((SNEAKY=1))\n", {"<blocked writer>"}),
         ("echo \"$((SNEAKY=1))\"\n", {"<blocked writer>"}),
-        ("local -n TAU_ENTRYPOINT_REF=TERM\n", {"<dynamic command>"}),
+        ("local -n OPENCODE_SANDBOX_ENTRYPOINT_REF=TERM\n", {"<dynamic command>"}),
         # Reserved words surface as command names only in constructs the
         # dialect excludes, so they fail closed.
         ("time read SNEAKY\n", {"<reserved word>"}),
@@ -617,7 +613,7 @@ def test_entrypoint_internal_variables_use_reserved_prefix():
         (_MANIFEST_LOOP.replace("-r ", "-ra "), {"IFS", "<blocked writer>"}),
         (_MANIFEST_LOOP[:-1] + " > /tmp/out\n", {"IFS", "<blocked writer>"}),
         (_MANIFEST_LOOP.replace("IFS= ", "IFS= IFS= "), {"IFS", "<blocked writer>"}),
-        (_MANIFEST_LOOP.replace(" TAU_ENTRYPOINT_X", " TAU_ENTRYPOINT_X OTHER"), {"IFS", "<blocked writer>"}),
+        (_MANIFEST_LOOP.replace(" OPENCODE_SANDBOX_ENTRYPOINT_X", " OPENCODE_SANDBOX_ENTRYPOINT_X OTHER"), {"IFS", "<blocked writer>"}),
         # tree-sitter parses `until` as a while_statement, so the exemption
         # must match the keyword itself, not just the loop shape.
         (_MANIFEST_LOOP.replace("while ", "until "), {"IFS", "<blocked writer>"}),
@@ -643,8 +639,8 @@ def test_entrypoint_manifest_prune_uses_streaming_read_loop():
     array expansion; the while-read loop streams one record at a time and is
     safe with empty manifests on every supported Bash."""
     text = _read("entrypoint.sh")
-    assert "while IFS= read -r TAU_ENTRYPOINT_SYNCED_NAME; do" in text
-    assert 'done < "$TAU_ENTRYPOINT_SYNC_MANIFEST"' in text
+    assert "while IFS= read -r OPENCODE_SANDBOX_ENTRYPOINT_SYNCED_NAME; do" in text
+    assert 'done < "$OPENCODE_SANDBOX_ENTRYPOINT_SYNC_MANIFEST"' in text
     assert "mapfile" not in text
     assert "readarray" not in text
 
@@ -681,121 +677,40 @@ def test_entrypoint_manifest_prune_ignores_unterminated_final_record(tmp_path):
     assert (taudir / "stray.txt").exists()
 
 
-_LEGACY_SHARED_CREDENTIALS = "/etc/tau-sandbox/shared/credentials.json"
-
-
-def _credentials_cleanup_block(text: str) -> str:
-    """Extract the stale credentials-symlink cleanup if-block from the
-    entrypoint: the symlink guard plus its inner stale-condition branch,
-    balanced to the matching outer fi."""
-    lines = text.splitlines()
-    start = next(
-        i
-        for i, line in enumerate(lines)
-        if 'if [ -L "$TAU_ENTRYPOINT_CREDENTIALS" ]; then' in line
-    )
-    depth = 0
-    for i in range(start, len(lines)):
-        if lines[i].startswith(("if ", "if[")):
-            depth += 1
-        elif lines[i].rstrip() == "fi":
-            depth -= 1
-            if depth == 0:
-                return "\n".join(lines[start : i + 1]) + "\n"
-    raise AssertionError("unbalanced credentials cleanup block")
-
-
-def _run_credentials_cleanup(tmp_path: pathlib.Path, mode: str) -> pathlib.Path:
-    """Run the entrypoint credentials cleanup block against a fake home
-    volume seeded with one of the documented credentials.json spellings."""
-    taudir = tmp_path / "taudir"
-    taudir.mkdir()
-    credentials = taudir / "credentials.json"
-    if mode == "shared-symlink":
-        credentials.symlink_to(_LEGACY_SHARED_CREDENTIALS)
-    elif mode == "dangling-symlink":
-        credentials.symlink_to(str(tmp_path / "gone.json"))
-    elif mode == "regular-file":
-        credentials.write_text('{"openrouter": "sk-project-token"}\n')
-    elif mode == "valid-symlink":
-        (taudir / "real.json").write_text('{"openrouter": "sk-project-token"}\n')
-        credentials.symlink_to("real.json")
-    else:
-        raise AssertionError(f"unknown mode: {mode}")
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"TAU_ENTRYPOINT_CREDENTIALS={shlex.quote(str(credentials))}",
-            _credentials_cleanup_block(_read("entrypoint.sh")),
-        ]
-    )
-    subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
-    return taudir
-
-
-@pytest.mark.parametrize(
-    ("mode", "survives"),
-    [
-        ("shared-symlink", False),
-        ("dangling-symlink", False),
-        ("regular-file", True),
-        ("valid-symlink", True),
-    ],
-)
-def test_entrypoint_removes_stale_credentials_symlink(tmp_path, mode, survives):
-    """Prove the startup cleanup removes exactly the stale credentials
-    symlinks: a link to the removed shared path and any dangling link are
-    removed, while a regular project-local file and a valid symlink inside
-    the volume survive untouched."""
-    taudir = _run_credentials_cleanup(tmp_path, mode)
-    credentials = taudir / "credentials.json"
-    assert credentials.exists() == survives
-    if not survives:
-        assert not credentials.is_symlink()  # path is gone, not left dangling
-    if mode == "regular-file":
-        assert credentials.read_text(encoding="utf-8") == (
-            '{"openrouter": "sk-project-token"}\n'
-        )
-    if mode == "valid-symlink":
-        assert credentials.is_symlink()
-        assert credentials.readlink() == pathlib.Path("real.json")
-
-
 def test_entrypoint_has_required_directives():
     text = _read("entrypoint.sh")
     assert "set -euo pipefail" in text
-    assert 'TAU_ENTRYPOINT_DIR="$TAU_ENTRYPOINT_HOME/.tau"' in text
+    assert 'OPENCODE_SANDBOX_ENTRYPOINT_CONFIG_DIR="$OPENCODE_SANDBOX_ENTRYPOINT_HOME/.config/opencode"' in text
+    assert 'OPENCODE_SANDBOX_ENTRYPOINT_DATA_DIR="$OPENCODE_SANDBOX_ENTRYPOINT_HOME/.local/share/opencode"' in text
     assert "rsync" not in text
     assert ".host-config-synced" in text
-    assert "TAU_ENTRYPOINT_LEGACY_BOOTSTRAP_MARKER" in text
+    assert "OPENCODE_SANDBOX_ENTRYPOINT_LEGACY_BOOTSTRAP_MARKER" in text
     assert "cp -a" in text
     assert "chmod -R u+w" in text
-    assert 'rm -rf -- "$TAU_ENTRYPOINT_DESTINATION"' in text
-    assert ".tau.msb-root-owned" in text
-    assert "link_volume_dir /var/lib/tau-sandbox/sessions" in text
-    assert "link_volume_dir /var/lib/tau-sandbox/logs" in text
-    assert 'cp -Rn "$TAU_ENTRYPOINT_LEGACY/." "$TAU_ENTRYPOINT_BACKING/"' in text
-    assert "TAU_NO_UPDATE_CHECK" in text
+    assert 'rm -rf -- "$OPENCODE_SANDBOX_ENTRYPOINT_DESTINATION"' in text
+    assert "link_volume_dir /var/lib/opencode-sandbox/sessions" in text
+    assert "link_volume_dir /var/lib/opencode-sandbox/logs" in text
+    assert 'cp -Rn "$OPENCODE_SANDBOX_ENTRYPOINT_LEGACY/." "$OPENCODE_SANDBOX_ENTRYPOINT_BACKING/"' in text
+    assert "OPENCODE_DISABLE_AUTOUPDATE" in text
     assert 'exec "$@"' in text
 
 
 def test_entrypoint_describes_isolated_config_layout():
     text = _read("entrypoint.sh")
-    assert "/etc/tau-sandbox/bootstrap/tau" in text
-    assert "/home/tau/.tau/credentials.json" in text
-    assert "/home/tau/.tau/sessions" in text
-    assert "/home/tau/.tau/logs" in text
-    assert "/var/lib/tau-sandbox/sessions" in text
-    assert "/var/lib/tau-sandbox/logs" in text
-    assert "/home/tau/.agents" in text
+    assert "/etc/opencode-sandbox/bootstrap/opencode" in text
+    assert "/home/opencode/.local/share/opencode/auth.json" in text
+    assert "/home/opencode/.local/share/opencode/storage" in text
+    assert "/home/opencode/.local/share/opencode/log" in text
+    assert "/var/lib/opencode-sandbox/sessions" in text
+    assert "/var/lib/opencode-sandbox/logs" in text
     assert "/tau-source" not in text
     assert "APPEND_SYSTEM.md" not in text
-    # Credentials are project-local: the legacy shared path appears exactly
-    # once, as the stale-symlink cleanup target, and no legacy backup-link
-    # or shared-export machinery references it.
-    assert text.count("/etc/tau-sandbox/shared") == 1
+    # Credentials are project-local and live in the data directory; the
+    # entrypoint never touches them, and no shared-mount machinery exists.
+    assert "/etc/opencode-sandbox/shared" not in text
+    assert "credentials.json" not in text
     assert ".sandbox-local-credentials.json" not in text
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in text
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in text
 
 
 def test_entrypoint_sets_persistent_env():
@@ -805,125 +720,64 @@ def test_entrypoint_sets_persistent_env():
     assert "HOME=" in text
 
 
-# --- tau-wrapper.py ---
+# --- opencode-wrapper.sh ---
 
 
-_STOCK_TAU_SITE_PACKAGES = pathlib.Path("/opt/tau/lib/python3.14/site-packages")
+def test_opencode_wrapper_text_carries_the_sandbox_injection():
+    """Prove the wrapper text carries the sandbox injection: the immutable
+    sandbox config export, the auto-update kill switch, and the exec of the
+    real image binary with the caller's arguments."""
+    text = _read("opencode-wrapper.sh")
+    assert "set -euo pipefail" in text
+    assert "export OPENCODE_CONFIG=/etc/opencode-sandbox/opencode.json" in text
+    assert "export OPENCODE_DISABLE_AUTOUPDATE=true" in text
+    assert 'exec /opt/opencode/bin/opencode "$@"' in text
+    # The sandbox context document reaches opencode only through the sandbox
+    # config's instructions entry; the wrapper adds no second channel.
+    assert "APPEND_SYSTEM.md" not in text
 
 
-def test_tau_wrapper_injects_immutable_prompt():
-    """Prove the wrapper text still carries the prompt injection: the
-    immutable sandbox-context flag and path stay on every launch."""
-    text = _read("tau-wrapper.py")
-    assert "--append-system-prompt" in text
-    assert "/etc/tau-sandbox/APPEND_SYSTEM.md" in text
-
-
-def test_tau_wrapper_has_no_in_place_credential_writer():
-    """Prove the wrapper no longer patches FileCredentialStore._save: the
-    shared-credential bind mount is gone, so the project-local credential
-    file is written only by Tau's stock atomic writer. A resurrected patch
-    (its _save binding, credentials import, or activation env var) would
-    reintroduce an in-place writer that tears under concurrent readers."""
-    text = _read("tau-wrapper.py")
-    assert "_save" not in text
-    assert "credentials" not in text
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in text
-
-
-def test_tau_wrapper_prepends_prompt_flag_before_app(tmp_path):
-    """Prove the wrapper inserts the prompt flag into sys.argv before
-    calling app(): run the wrapper under the test interpreter with a stub
-    tau_coding.cli app on PYTHONPATH and assert the recorded argv shows the
-    flag at index 1 with the caller's arguments preserved after it."""
-    stub_root = tmp_path / "stub"
-    package_dir = stub_root / "tau_coding"
-    package_dir.mkdir(parents=True)
-    (package_dir / "__init__.py").write_text("")
-    record_path = tmp_path / "argv-record.json"
-    (package_dir / "cli.py").write_text(
-        "import json\n"
-        "import os\n"
-        "import sys\n"
-        "def app() -> int:\n"
-        "    with open(os.environ['WRAPPER_ARGV_RECORD'], 'w', encoding='utf-8') as handle:\n"
-        "        json.dump(sys.argv, handle)\n"
-        "    return 0\n"
+def test_opencode_wrapper_execs_the_binary_with_caller_arguments(tmp_path):
+    """Run the wrapper against a stub binary and check the recorded call:
+    the stub sees the sandbox config and auto-update switch exported and the
+    caller's arguments preserved byte-for-byte."""
+    stub = tmp_path / "opencode-stub"
+    stub.write_text(
+        "#!/bin/bash\n"
+        "printf '%s\\n' \"$OPENCODE_CONFIG\" \"$OPENCODE_DISABLE_AUTOUPDATE\" \"$@\"\n"
     )
-    env = dict(
-        os.environ,
-        PYTHONPATH=str(stub_root),
-        WRAPPER_ARGV_RECORD=str(record_path),
+    stub.chmod(0o755)
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text(
+        _read("opencode-wrapper.sh").replace(
+            'exec /opt/opencode/bin/opencode "$@"',
+            f'exec {shlex.quote(str(stub))} "$@"',
+        )
     )
+    wrapper.chmod(0o755)
     result = subprocess.run(
-        [sys.executable, str(CONFIG_DIR / "tau-wrapper.py"), "serve", "--model", "gpt-5"],
+        [str(wrapper), "run", "--model", "claude-sonnet-4-5"],
         capture_output=True,
         text=True,
-        env=env,
     )
     assert result.returncode == 0, result.stderr
-    recorded = json.loads(record_path.read_text(encoding="utf-8"))
-    assert recorded == [
-        str(CONFIG_DIR / "tau-wrapper.py"),
-        "--append-system-prompt",
-        "/etc/tau-sandbox/APPEND_SYSTEM.md",
-        "serve",
+    assert result.stdout.splitlines() == [
+        "/etc/opencode-sandbox/opencode.json",
+        "true",
+        "run",
         "--model",
-        "gpt-5",
+        "claude-sonnet-4-5",
     ]
 
 
-def _stock_file_credential_store(monkeypatch) -> type:
-    """FileCredentialStore from the installed tau_coding package, whose
-    stock atomic writer now owns the project-local credential file."""
-    monkeypatch.syspath_prepend(str(_STOCK_TAU_SITE_PACKAGES))
-    from tau_coding.credentials import FileCredentialStore
-
-    return FileCredentialStore
-
-
-def test_stock_credential_writer_keeps_whole_file_guarantee(tmp_path, monkeypatch):
-    """Guard the whole-file guarantee the wrapper change now rests on: the
-    stock FileCredentialStore._save writes a temp file beside the target
-    and atomically renames it into place, so a concurrent reader observes a
-    complete old or complete new credential object, never a partial file.
-    This characterization test passes before and after the wrapper change;
-    it guards against a regression to an in-place writer."""
-    credential_store = _stock_file_credential_store(monkeypatch)
-    path = tmp_path / "credentials.json"
-    store = credential_store(path)
-    store.set("seed", "x")  # the target file exists for the whole run
-    stop = threading.Event()
-    violations: list[BaseException] = []
-    observations: list[dict] = []
-
-    def read_until_stopped() -> None:
-        while not stop.is_set():
-            try:
-                raw = path.read_text(encoding="utf-8")
-                data = json.loads(raw)
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                violations.append(exc)
-                return
-            if not isinstance(data, dict):
-                violations.append(
-                    ValueError(f"credential file was not an object: {raw[:80]!r}")
-                )
-                return
-            observations.append(data)
-            time.sleep(0)
-
-    reader = threading.Thread(target=read_until_stopped)
-    reader.start()
-    try:
-        for index in range(300):
-            store.set(f"key-{index}", "x" * 2000)
-    finally:
-        stop.set()
-        reader.join(timeout=10)
-    assert not reader.is_alive()
-    assert violations == []
-    assert observations  # the reader actually overlapped the writes
+def test_sandbox_config_injects_the_sandbox_context():
+    """Prove the sandbox config is the wrapper's injection point: valid JSON
+    carrying exactly one instructions entry, the sandbox context document,
+    and auto-update off."""
+    data = json.loads((CONFIG_DIR / "opencode.json").read_text(encoding="utf-8"))
+    assert data["$schema"] == "https://opencode.ai/config.json"
+    assert data["autoupdate"] is False
+    assert data["instructions"] == ["/etc/opencode-sandbox/APPEND_SYSTEM.md"]
 
 
 # --- documentation contracts: project secrets ---
@@ -1135,18 +989,23 @@ def test_readme_describes_project_local_credentials_and_login_helper():
 
 def test_append_system_doc_describes_project_local_credentials():
     """Prove the sandbox environment reference describes the project-local
-    credential file and never the shared host credential mount."""
+    credential file and never a shared host credential mount."""
     text = _read("APPEND_SYSTEM.md")
-    assert "/home/tau/.tau/credentials.json" in text
+    assert "/home/opencode/.local/share/opencode/auth.json" in text
     assert "project" in text.lower()
-    assert "/etc/tau-sandbox/shared" not in text
+    assert "/etc/opencode-sandbox/shared" not in text
     assert "shared host credential" not in text
     assert "Shared credentials" not in text
 
 
 def test_scripts_pass_syntax_checks():
-    """Prove shell and Python launcher scripts parse."""
-    scripts = [REPO_ROOT / "run.sh", REPO_ROOT / "install.sh", CONFIG_DIR / "entrypoint.sh"]
+    """Prove launcher and sandbox shell scripts parse."""
+    scripts = [
+        REPO_ROOT / "run.sh",
+        REPO_ROOT / "install.sh",
+        CONFIG_DIR / "entrypoint.sh",
+        CONFIG_DIR / "opencode-wrapper.sh",
+    ]
     for script in scripts:
         result = subprocess.run(
             ["bash", "-n", str(script)],
@@ -1154,10 +1013,3 @@ def test_scripts_pass_syntax_checks():
             text=True,
         )
         assert result.returncode == 0, f"{script.name} failed bash -n:\n{result.stderr}"
-
-    result = subprocess.run(
-        ["python", "-m", "py_compile", str(CONFIG_DIR / "tau-wrapper.py")],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
