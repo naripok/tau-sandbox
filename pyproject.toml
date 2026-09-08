@@ -1,7 +1,7 @@
 [project]
-name = "tau-sandbox"
+name = "opencode-sandbox"
 version = "1.0"
-description = "A microVM sandbox for the Tau coding agent (microsandbox + tau)"
+description = "A microVM sandbox for the opencode coding agent (microsandbox + opencode)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

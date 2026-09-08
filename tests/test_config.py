@@ -850,13 +850,13 @@ def test_append_system_doc_distinguishes_placeholders_and_ordinary_values():
 
 
 def test_readme_has_valid_paired_examples_and_exact_mapping():
-    """Prove the README documents `TAU_PROJECTS_DIR` and the exact
+    """Prove the README documents `OPENCODE_SANDBOX_PROJECTS_DIR` and the exact
     physical launch-directory mapping, and that its secrets.env/secrets.yaml
     examples are themselves grammatically valid paired sources with
     matching name sets. Invalid examples would teach users a configuration
     the launcher rejects."""
     readme = _readme()
-    assert "TAU_PROJECTS_DIR" in readme
+    assert "OPENCODE_SANDBOX_PROJECTS_DIR" in readme
     assert "${HOME}/Projects" in readme
     assert "empty" in readme.lower()
     assert "relative" in readme.lower()
@@ -892,7 +892,7 @@ def test_readme_covers_pair_contract_and_reserved_names():
     assert "plaintext fallback" not in lower
     # Reserved names: the exact list and prefixes, in the reserved section.
     reserved_section = readme.split("#### Reserved names", 1)[1]
-    for token in ("PATH", "HOME", "BASH_ENV", "LD_PRELOAD", "BASH", "TAU_"):
+    for token in ("PATH", "HOME", "BASH_ENV", "LD_PRELOAD", "BASH", "OPENCODE_SANDBOX_"):
         assert token in reserved_section
 
 
@@ -949,21 +949,21 @@ def test_living_spec_contains_current_project_secret_requirements():
 
 def test_living_spec_contains_current_credential_requirements():
     """Prove the living specification carries the per-project credential
-    requirements and none of the removed shared-mount or in-place-writer
-    machinery."""
+    requirements and none of the removed tau-fork guarantee machinery."""
     spec = (REPO_ROOT / "docs/SPEC.md").read_text()
     for name in (
         "Project-local credential storage",
         "Host login helper produces a readable project credential",
-        "Concurrent refresh spends a rotating token once",
-        "Writable shared credentials exception",
+        "Credential writes follow stock opencode behavior",
+        "Per-project refresh isolation",
     ):
         assert f"### Requirement: {name}" in spec, name
-    # The old wrapper patch and shared-mount machinery is gone.
-    assert "switch `FileCredentialStore`" not in spec
-    assert "/etc/tau-sandbox/shared/credentials.json" not in spec
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in spec
-    assert "in-place write" not in spec
+    # The old tau-fork guarantees are gone: stock opencode owns writes
+    # and refreshes.
+    assert "Concurrent refresh spends a rotating token once" not in spec
+    assert "Writable shared credentials exception" not in spec
+    assert "/etc/opencode-sandbox/shared/auth.json" not in spec
+    assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in spec
 
 
 def test_readme_describes_project_local_credentials_and_login_helper():
@@ -972,15 +972,15 @@ def test_readme_describes_project_local_credentials_and_login_helper():
     helper with its browser and paste flows."""
     readme = _readme()
     lower = readme.lower()
-    assert "tau-login-openai" in readme
+    assert "opencode-login-openai" in readme
     assert "project-local" in lower
     assert "never mounted" in lower
     assert "browser" in lower
     assert "paste" in lower or "pasted" in lower
     # Removed shared-credential behavior is gone from the README.
     for removed in (
-        "/etc/tau-sandbox/shared/credentials.json",
-        "TAU_SANDBOX_SHARED_CREDENTIALS",
+        "/etc/opencode-sandbox/shared/auth.json",
+        "OPENCODE_SANDBOX_SHARED_CREDENTIALS",
         "in-place",
         "sole write exception",
     ):

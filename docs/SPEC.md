@@ -1,8 +1,8 @@
-# Tau Sandbox Specification
+# opencode Sandbox Specification
 
 ## Purpose
 
-Defines the behavioral requirements for the Tau coding agent sandbox: a per-project, hardware-isolated microVM built on microsandbox. The sandbox gives Tau a working coding environment while limiting host access to explicit mounts and isolating durable agent state by project.
+Defines the behavioral requirements for the opencode coding agent sandbox: a per-project, hardware-isolated microVM built on microsandbox. The sandbox gives opencode a working coding environment while limiting host access to explicit mounts and isolating durable agent state by project.
 
 ## Requirements
 
@@ -10,9 +10,9 @@ Defines the behavioral requirements for the Tau coding agent sandbox: a per-proj
 
 For a project at resolved path `<path>`, `run.sh` SHALL use the first eight hexadecimal characters of the SHA-256 of `<path>` (including the shell `echo` newline) and the project volume name to derive:
 
-- `tau-persist-<volume-name>-<hash>` mounted at `/home/tau`
-- `tau-sessions-<volume-name>-<hash>` mounted at `/var/lib/tau-sandbox/sessions` and linked from `/home/tau/.tau/sessions`
-- `tau-logs-<volume-name>-<hash>` mounted at `/var/lib/tau-sandbox/logs` and linked from `/home/tau/.tau/logs`
+- `opencode-persist-<volume-name>-<hash>` mounted at `/home/opencode`
+- `opencode-sessions-<volume-name>-<hash>` mounted at `/var/lib/opencode-sandbox/sessions` and linked from `/home/opencode/.local/share/opencode/storage`
+- `opencode-logs-<volume-name>-<hash>` mounted at `/var/lib/opencode-sandbox/logs` and linked from `/home/opencode/.local/share/opencode/log`
 
 The project volume name SHALL be the project basename when it is a legal msb volume name (non-empty, only `[A-Za-z0-9._-]`, at most 233 characters so the full volume name fits a 255-byte path component), and otherwise the sanitized basename. The sanitized basename SHALL be the lowercase form in which every run of characters outside `[a-z0-9]` is replaced by a single `_`, with leading and trailing `_` removed and the result truncated to 218 characters; an empty result SHALL become `project`. Uniqueness SHALL be carried by `<hash>`, so sanitization may map distinct basenames to the same name.
 
@@ -58,71 +58,71 @@ The `/workspace` mount SHALL propagate guest-applied permission bits to the host
 
 ### Requirement: Project-local config discovery
 
-When `TAU_CONFIG_DIR` is unset, `run.sh` SHALL select as the host Tau config directory the `.tau` entry of the nearest ancestor of the launch directory, where the launch directory itself counts as an ancestor and `.tau` entries are matched as directories with symlinks followed; a dangling `.tau` symlink SHALL NOT match. When no ancestor matches, `${HOME}/.tau` SHALL apply. An explicitly set `TAU_CONFIG_DIR` SHALL take precedence over discovery, and discovery SHALL NOT change the resolved project path used for volume derivation.
+When `OPENCODE_SANDBOX_CONFIG_DIR` is unset, `run.sh` SHALL select as the host opencode config directory the `.opencode` entry of the nearest ancestor of the launch directory, where the launch directory itself counts as an ancestor and `.opencode` entries are matched as directories with symlinks followed; a dangling `.opencode` symlink SHALL NOT match. When no ancestor matches, `${XDG_CONFIG_HOME:-${HOME}/.config}/opencode` SHALL apply. An explicitly set `OPENCODE_SANDBOX_CONFIG_DIR` SHALL take precedence over discovery, and discovery SHALL NOT change the resolved project path used for volume derivation.
 
 #### Scenario: Nearest project root config is discovered
 
-- GIVEN `TAU_CONFIG_DIR` is unset, `<project-root>/.tau` is a directory, and `run.sh` launches from `<project-root>/nested/dir`
+- GIVEN `OPENCODE_SANDBOX_CONFIG_DIR` is unset, `<project-root>/.opencode` is a directory, and `run.sh` launches from `<project-root>/nested/dir`
 - WHEN the launch proceeds
-- THEN `<project-root>/.tau` SHALL be the host Tau config directory
+- THEN `<project-root>/.opencode` SHALL be the host opencode config directory
 
 #### Scenario: Innermost config wins
 
-- GIVEN `.tau` directories at both `<project-root>` and `<project-root>/nested`, and `run.sh` launches from `<project-root>/nested/dir`
+- GIVEN `.opencode` directories at both `<project-root>` and `<project-root>/nested`, and `run.sh` launches from `<project-root>/nested/dir`
 - WHEN the launch proceeds
-- THEN `<project-root>/nested/.tau` SHALL be the host Tau config directory
+- THEN `<project-root>/nested/.opencode` SHALL be the host opencode config directory
 
 #### Scenario: Discovered config via root symlink
 
-- GIVEN `<project-root>/.tau` is a symlink to directory `<config-world>` and `TAU_CONFIG_DIR` is unset
+- GIVEN `<project-root>/.opencode` is a symlink to directory `<config-world>` and `OPENCODE_SANDBOX_CONFIG_DIR` is unset
 - WHEN `run.sh` launches from a directory under `<project-root>`
-- THEN `<config-world>` SHALL be the host Tau config directory
+- THEN `<config-world>` SHALL be the host opencode config directory
 
 #### Scenario: No discovery match falls back to the default
 
-- GIVEN no ancestor's `.tau` entry is a directory (absent or a dangling symlink) and `TAU_CONFIG_DIR` is unset
+- GIVEN no ancestor's `.opencode` entry is a directory (absent or a dangling symlink) and `OPENCODE_SANDBOX_CONFIG_DIR` is unset
 - WHEN `run.sh` launches
-- THEN `${HOME}/.tau` SHALL be the host Tau config directory
+- THEN `${XDG_CONFIG_HOME:-${HOME}/.config}/opencode` SHALL be the host opencode config directory
 
 #### Scenario: Explicit override beats discovery
 
-- GIVEN `<project-root>/.tau` is a directory and `TAU_CONFIG_DIR` is set to `<override-dir>`
+- GIVEN `<project-root>/.opencode` is a directory and `OPENCODE_SANDBOX_CONFIG_DIR` is set to `<override-dir>`
 - WHEN `run.sh` launches from a directory under `<project-root>`
-- THEN `<override-dir>` SHALL be the host Tau config directory
+- THEN `<override-dir>` SHALL be the host opencode config directory
 
-### Requirement: Host Tau config synchronizes into writable project config
+### Requirement: Host opencode config synchronizes into writable project config
 
-When `TAU_CONFIG_DIR` exists, each regular top-level file or directory SHALL be copied to a temporary host-side snapshot and mounted read-only at `/etc/tau-sandbox/bootstrap/tau/<name>`, except credentials, sessions, logs, trust-store files, and synchronization metadata. Symlinks SHALL be recursively dereferenced while creating the snapshot, allowing linked skills, extensions, and other config at any depth to synchronize without exposing broken host-absolute links inside the guest. Dangling symlinks SHALL fail startup, and special files SHALL be ignored:
+When `OPENCODE_SANDBOX_CONFIG_DIR` exists, each regular top-level file or directory SHALL be copied to a temporary host-side snapshot and mounted read-only at `/etc/opencode-sandbox/bootstrap/opencode/<name>`, except the credential file, opencode's generated install artifacts, and synchronization metadata. Symlinks SHALL be recursively dereferenced while creating the snapshot, allowing linked agents, commands, plugins, skills, and other config at any depth to synchronize without exposing broken host-absolute links inside the guest. Dangling symlinks SHALL fail startup, and special files SHALL be ignored. The snapshot SHALL exclude exactly:
 
-- Host `sessions` and `logs` SHALL NOT be mounted.
-- Host `trust.json`, `trust.json.lock`, and `trust.json.pending` SHALL NOT be mounted; trust state SHALL remain writable in the per-project home because Tau requires a writable lock and atomic replacement.
-- The isolated session and log volumes SHALL be mounted under `/var/lib/tau-sandbox/` and linked from their normal Tau paths.
-- Host `credentials.json` SHALL NOT be mounted or bootstrapped; the credential file SHALL live in the per-project home volume.
+- `auth.json` (the credential file; it SHALL live only in the per-project home volume and SHALL never be mounted or bootstrapped).
+- opencode's generated install artifacts: `node_modules`, `package.json`, `package-lock.json`, `bun.lock`, and `.gitignore` (opencode installs its own per config directory).
+- Synchronization metadata: `.host-config-synced` and `.host-config-bootstrapped`.
+- The isolated session and log volumes SHALL be mounted under `/var/lib/opencode-sandbox/` and linked from opencode's normal data paths.
 - The host config directory itself SHALL NOT be mounted read-write.
 
-Microsandbox SHALL NOT receive nested mount targets under `/home/tau/.tau`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable Tau directory first and link the session and log backing paths into it. A root-owned Tau directory left by the earlier nested-mount layout SHALL be moved aside automatically. Non-empty real session or log directories from that layout SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
+Microsandbox SHALL NOT receive nested mount targets under `/home/opencode`, because its root initialization creates missing parent directories before switching to UID 1000. The entrypoint SHALL create the writable opencode data directory first and link the storage and log backing paths into it. Non-empty real storage or log directories SHALL be merged into their backing volumes without overwriting existing volume files before links replace them.
 
-On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<name>` with a writable copy of its mounted source. It SHALL track synchronized top-level names and remove a previously synchronized resource when that resource is removed from the host. Project-local entries that were never synchronized from the host SHALL remain persistent. This makes host settings, providers, catalogs, prompts, skills, themes, extensions, and other resources authoritative at startup while preserving host files. It also keeps each atomic config writer's temporary file and destination on the same writable filesystem.
+On every start, the entrypoint SHALL replace each host-managed `/home/opencode/.config/opencode/<name>` with a writable copy of its mounted source. It SHALL track synchronized top-level names and remove a previously synchronized resource when that resource is removed from the host. Project-local entries that were never synchronized from the host SHALL remain persistent. This makes host settings, providers, agents, commands, plugins, skills, and other resources authoritative at startup while preserving host files. It also keeps opencode's config writes and their destinations on the same writable filesystem.
 
-#### Scenario: Fresh Tau home remains writable
+#### Scenario: Fresh home remains writable
 
 - GIVEN microsandbox is starting a new project with empty persistent volumes
-- WHEN it prepares session and log mounts before launching UID 1000
-- THEN none of those mount targets SHALL create `/home/tau/.tau`
-- AND the entrypoint SHALL create a writable Tau directory and normal-path links
+- WHEN it prepares storage and log mounts before launching UID 1000
+- THEN none of those mount targets SHALL create `/home/opencode/.local/share/opencode`
+- AND the entrypoint SHALL create a writable data directory and normal-path links
 
 #### Scenario: Linked host resource seeds writable project state
 
-- GIVEN a symlink within host `~/.tau/skills` targets a directory outside `~/.tau`
+- GIVEN a symlink within the host config `skills` directory targets a directory outside the host config
 - WHEN the project sandbox starts
 - THEN the target SHALL be dereferenced into the temporary host-side snapshot
 - AND the guest bootstrap and writable config paths SHALL contain an ordinary directory rather than the host symlink
 
 #### Scenario: Host resource seeds writable project state
 
-- GIVEN host `~/.tau/settings.json` exists
+- GIVEN host `settings.json` exists in the host config directory
 - WHEN the project sandbox starts for the first time
-- THEN Tau SHALL read a copied value from `/home/tau/.tau/settings.json`
+- THEN opencode SHALL read a copied value from `/home/opencode/.config/opencode/settings.json`
 - AND a guest write to that project-local path SHALL succeed
 - AND the host file SHALL remain unchanged
 
@@ -135,38 +135,38 @@ On every start, the entrypoint SHALL replace each host-managed `/home/tau/.tau/<
 - AND a previously synchronized resource removed from the host SHALL be removed locally
 - AND an entry created only inside the sandbox SHALL remain persistent
 
-#### Scenario: Atomic provider replacement succeeds
+#### Scenario: Config file replacement succeeds
 
 - GIVEN host `providers.json` seeded a project-local copy
-- WHEN Tau writes a sibling temporary file and renames it over `/home/tau/.tau/providers.json`
+- WHEN a guest process writes a sibling temporary file and renames it over `/home/opencode/.config/opencode/providers.json`
 - THEN the replacement SHALL succeed without `EBUSY`
 - AND host `providers.json` SHALL remain unchanged
 
-#### Scenario: Host history and trust are not exposed
+#### Scenario: Host history and credentials are not exposed
 
-- GIVEN host sessions, logs, and trust-store files contain data
+- GIVEN host session storage, logs, and the host credential file contain data
 - WHEN the sandbox starts
-- THEN host sessions, logs, and trust-store files SHALL NOT be mounted as bootstrap sources
-- AND sessions, logs, and trust SHALL use writable per-project state
+- THEN none of them SHALL be mounted as bootstrap sources or direct mounts
+- AND sessions, logs, and credentials SHALL use writable per-project state
 
-### Requirement: Writable shared credentials exception
+### Requirement: Credential writes follow stock opencode behavior
 
-The launcher SHALL NOT mount host `credentials.json`. A credential update in a guest SHALL leave the project credential file whole: a concurrent reader SHALL observe either the old or the new complete credential, never a partial file.
+The launcher SHALL NOT mount host `auth.json`, and the launcher SHALL NOT write the project credential file during a launch. opencode owns the project credential file: its format, its writes, and its refresh behavior. opencode writes the file directly without an atomic replacement step, so the launcher makes no whole-file guarantee for a concurrent guest reader.
 
-#### Scenario: Credential update stays whole for readers
+#### Scenario: Launcher never writes the credential file
 
-- GIVEN a sandbox with a project-local credential file
-- WHEN Tau updates a stored credential while another process reads the file
-- THEN the reader SHALL observe either the old or the new complete credential
-- AND it SHALL NOT observe a partial file
+- GIVEN a project launch with or without a stored credential
+- WHEN the launcher boots the sandbox
+- THEN the launcher SHALL NOT create or modify `auth.json`
+- AND credential creation and updates SHALL come only from opencode or the host login helper
 
 ### Requirement: Project-local credential storage
 
-The launcher SHALL NOT mount host `credentials.json` into the guest. Each sandbox SHALL read and write a credential file inside its project persistent home volume. Two sandboxes for different projects SHALL NOT share a credential file. Credential creation and update SHALL occur only in the project volume, never on the host.
+The launcher SHALL NOT mount host `auth.json` into the guest. Each sandbox SHALL read and write a credential file inside its project persistent home volume. Two sandboxes for different projects SHALL NOT share a credential file. Credential creation and update SHALL occur only in the project volume, never on the host.
 
 #### Scenario: Launch does not mount host credentials
 
-- GIVEN host `credentials.json` exists
+- GIVEN host `~/.local/share/opencode/auth.json` exists
 - WHEN the launcher starts a sandbox for a project
 - THEN the launcher SHALL NOT add a mount for the host credential file
 - AND the guest credential path SHALL resolve inside the project home volume
@@ -186,14 +186,14 @@ The launcher SHALL NOT mount host `credentials.json` into the guest. Each sandbo
 
 ### Requirement: Host login helper produces a readable project credential
 
-A host-side helper SHALL run the OpenAI Codex authorization flow on the host and SHALL produce a credential that a sandbox for the chosen project can load unchanged. The helper SHALL place the credential inside the project home volume. The helper SHALL NOT publish a guest port and SHALL NOT require network access into the guest.
+A host-side helper SHALL run the OpenAI authorization flow on the host and SHALL produce an `auth.json` document that a sandbox for the chosen project can load unchanged. The document SHALL use opencode's `openai` OAuth entry shape with `expires` in epoch milliseconds and `accountId`. The helper SHALL place the document inside the project home volume at `~/.local/share/opencode/auth.json`. The helper SHALL NOT publish a guest port and SHALL NOT require network access into the guest.
 
 #### Scenario: Browser login completes on the host
 
 - GIVEN a project and a host with a browser
 - WHEN the user runs the helper for the project
-- THEN the helper SHALL complete the Codex authorization flow against the host callback
-- AND the credential SHALL appear inside the project home volume
+- THEN the helper SHALL complete the OpenAI authorization flow against the host callback
+- AND the credential SHALL appear inside the project home volume in opencode's document shape
 - AND a sandbox for that project SHALL load the credential unchanged
 
 #### Scenario: Headless host falls back to paste
@@ -203,27 +203,16 @@ A host-side helper SHALL run the OpenAI Codex authorization flow on the host and
 - THEN the helper SHALL print the authorization URL and accept a pasted redirect URL
 - AND a sandbox for that project SHALL load the resulting credential unchanged
 
-### Requirement: Concurrent refresh spends a rotating token once
+### Requirement: Per-project refresh isolation
 
-When two processes share one project credential file, a refresh SHALL spend a rotating refresh token at most once. No process SHALL receive a refresh-token-reused error from concurrent refresh of one shared file.
+Credential refresh SHALL follow stock opencode behavior: refresh runs inside each guest process, with no launcher-side or cross-process lock. The per-project credential file SHALL keep different projects from sharing a refresh token family. Two sandboxes for one project share that project's file, so concurrent refresh of one project follows opencode's own behavior.
 
-#### Scenario: Concurrent refresh spends the token once
+#### Scenario: Different projects never share a refresh token
 
-- GIVEN two processes share one project credential file with an expired token
-- WHEN both processes begin a refresh before either refresh completes
-- THEN exactly one refresh request SHALL use the stored refresh token
-- AND the other process SHALL use the rotated credential written by the winner
-
-### Requirement: Read-only `.agents` resources
-
-When `TAU_AGENTS_DIR` exists, it SHALL be mounted read-only at `/home/tau/.agents`.
-
-#### Scenario: Global skill is usable but immutable
-
-- GIVEN a host `.agents` skill exists
-- WHEN the sandbox starts
-- THEN Tau SHALL be able to read it
-- AND guest writes to the host skill SHALL fail
+- GIVEN two sandboxes for two different projects
+- WHEN each refreshes its credential
+- THEN each refresh SHALL use the refresh token stored in its own project volume
+- AND neither refresh SHALL spend the other project's refresh token
 
 ### Requirement: Reset bypasses secret discovery
 
@@ -248,7 +237,7 @@ belongs to the projects root: a lexical path outside that physically resolves
 inside SHALL be eligible, while a lexical path inside that physically
 resolves outside SHALL be ineligible.
 
-`TAU_PROJECTS_DIR` SHALL select the projects root and SHALL default to
+`OPENCODE_SANDBOX_PROJECTS_DIR` SHALL select the projects root and SHALL default to
 `${HOME}/Projects`. An explicitly set empty value SHALL be invalid; a
 relative explicit value SHALL resolve from the launch directory; an explicit
 value that is not a readable, searchable directory SHALL fail the launch with
@@ -311,14 +300,14 @@ projects root itself and launches outside it SHALL NOT derive project secrets.
 
 #### Scenario: Unusable default root disables discovery
 
-- GIVEN `TAU_PROJECTS_DIR` is unset and `${HOME}/Projects` is absent,
+- GIVEN `OPENCODE_SANDBOX_PROJECTS_DIR` is unset and `${HOME}/Projects` is absent,
   dangling, non-directory, unreadable, or unsearchable
 - WHEN the launcher starts
 - THEN it SHALL launch without project secrets
 
 #### Scenario: Invalid explicit root fails
 
-- GIVEN `TAU_PROJECTS_DIR` is set to an empty value or a path that is not a
+- GIVEN `OPENCODE_SANDBOX_PROJECTS_DIR` is set to an empty value or a path that is not a
   usable directory
 - WHEN the launcher starts
 - THEN it SHALL fail with a message identifying the setting
@@ -338,7 +327,7 @@ inside the physical projects root (symlink escape); an escaped directory
 SHALL fail the launch regardless of whether it contains a pair.
 
 For a present pair, the launcher SHALL source `secrets.env` as trusted shell
-with export-all enabled, after `TAU_ENV_FILE` is sourced, so secret values win
+with export-all enabled, after `OPENCODE_SANDBOX_ENV_FILE` is sourced, so secret values win
 over same-named ordinary assignments in the launcher environment that the
 runtime inherits. `secrets.yaml` SHALL be passed to the runtime unmodified;
 the launcher SHALL NOT parse or validate either file's contents beyond the
@@ -353,9 +342,9 @@ inherited launcher environment. A declared name in the reserved set — exactly 
 `SHELL`, `TERM`, `COLORTERM`, `USER`, `LOGNAME`, `PATH`, `IFS`, `PWD`,
 `OLDPWD`, `SHLVL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`,
 `PYTHONHOME`, `PYTHONPATH`, `NODE_OPTIONS`, or any name beginning with `BASH`
-or `TAU_` — SHALL fail the launch with a message naming the offending
+or `OPENCODE_SANDBOX_` — SHALL fail the launch with a message naming the offending
 variable. The image entrypoint SHALL keep all internal shell variables under
-the reserved `TAU_ENTRYPOINT_` prefix so reserved user names can never
+the reserved `OPENCODE_SANDBOX_ENTRYPOINT_` prefix so reserved user names can never
 collide with entrypoint internals.
 
 #### Scenario: Absent directory disables secrets
@@ -399,7 +388,7 @@ collide with entrypoint internals.
 
 #### Scenario: Secret values win over ordinary assignments
 
-- GIVEN the same name is assigned in `TAU_ENV_FILE` and declared in
+- GIVEN the same name is assigned in `OPENCODE_SANDBOX_ENV_FILE` and declared in
   `secrets.env`
 - WHEN the launcher sources both files in order
 - THEN the runtime process environment SHALL contain the `secrets.env` value
@@ -407,7 +396,7 @@ collide with entrypoint internals.
 
 #### Scenario: Reserved name fails fast
 
-- GIVEN `secrets.env` declares a reserved name such as `PATH` or `TAU_HOME`
+- GIVEN `secrets.env` declares a reserved name such as `PATH` or `OPENCODE_SANDBOX_HOME`
 - WHEN the launcher loads the pair
 - THEN it SHALL fail with a message naming the offending variable
 - AND the sandbox SHALL NOT be created
@@ -475,39 +464,45 @@ SHALL NOT expand sandbox network policy.
 
 ### Requirement: Invariant environment-reference injection
 
-`run.sh` SHALL mount repository `config/APPEND_SYSTEM.md` read-only at `/etc/tau-sandbox/APPEND_SYSTEM.md`. The installed `/usr/local/bin/tau` wrapper SHALL prepend:
+`run.sh` SHALL mount repository `config/opencode.json` and `config/APPEND_SYSTEM.md` read-only at `/etc/opencode-sandbox/`. The installed `/usr/local/bin/opencode` wrapper SHALL export on every launch:
 
 ```text
---append-system-prompt /etc/tau-sandbox/APPEND_SYSTEM.md
+OPENCODE_CONFIG=/etc/opencode-sandbox/opencode.json
 ```
 
-before all caller arguments. The image SHALL also contain a fallback copy at that path.
+The sandbox config SHALL carry the sandbox context document as its `instructions` entry:
 
-Additional explicit append options SHALL remain in caller order and therefore combine with the sandbox reference. Tau's normal automatic `APPEND_SYSTEM.md` discovery is not cumulative with explicit startup input and SHALL be documented accordingly.
+```text
+instructions: ["/etc/opencode-sandbox/APPEND_SYSTEM.md"]
+```
 
-#### Scenario: Project prompt cannot shadow sandbox context
+The wrapper SHALL then exec the image's opencode binary with the caller's arguments preserved. The image SHALL also contain a fallback copy of both files at those paths.
 
-- GIVEN a project has `.tau/APPEND_SYSTEM.md`
-- WHEN Tau starts normally through the wrapper
-- THEN the explicit sandbox reference SHALL remain in the active system prompt
+opencode concatenates `instructions` arrays across global config, `OPENCODE_CONFIG`, and project config with deduplication, so additional instructions from any config source SHALL combine with the sandbox reference and no later config source SHALL remove it.
 
-#### Scenario: Explicit additional prompt combines
+#### Scenario: Project config cannot shadow sandbox context
 
-- GIVEN the caller supplies another `--append-system-prompt`
-- WHEN Tau starts
-- THEN the sandbox reference SHALL precede the caller's append input
+- GIVEN a project has an `opencode.json` with its own `instructions`
+- WHEN opencode starts normally through the wrapper
+- THEN the sandbox reference SHALL remain in the active system prompt
+
+#### Scenario: Explicit additional instructions combine
+
+- GIVEN global or project config declares other instructions
+- WHEN opencode starts
+- THEN the sandbox reference SHALL appear together with the other instructions
 
 ### Requirement: Hardened guest execution
 
 The sandbox SHALL:
 
-- run as user `tau` with UID/GID 1000
+- run as user `opencode` with UID/GID 1000
 - use microsandbox's `restricted` security profile
 - strip setuid and setgid bits from image files
 - mount `/tmp` as tmpfs
 - cap processes with `nproc`
 - use the public network profile without publishing inbound ports
-- allow egress to exactly the hosts listed in `TAU_LAN_HOSTS` (comma-separated, empty by default) without allowing the rest of the private network
+- allow egress to exactly the hosts listed in `OPENCODE_SANDBOX_LAN_HOSTS` (comma-separated, empty by default) without allowing the rest of the private network
 
 #### Scenario: Guest identity is unprivileged
 
@@ -518,21 +513,21 @@ The sandbox SHALL:
 
 - WHEN the sandbox launches
 - THEN `--net public` SHALL be passed to `msb run`
-- AND one `--net-rule allow@<host>` SHALL be passed per non-empty `TAU_LAN_HOSTS` entry
-- AND an unset or empty `TAU_LAN_HOSTS` SHALL pass no `--net-rule`
-- AND a `TAU_LAN_HOSTS` value containing characters outside `[0-9A-Za-z.:-]` SHALL abort the launch with an error
+- AND one `--net-rule allow@<host>` SHALL be passed per non-empty `OPENCODE_SANDBOX_LAN_HOSTS` entry
+- AND an unset or empty `OPENCODE_SANDBOX_LAN_HOSTS` SHALL pass no `--net-rule`
+- AND an `OPENCODE_SANDBOX_LAN_HOSTS` value containing characters outside `[0-9A-Za-z.:-]` SHALL abort the launch with an error
 - AND the broad `private` network profile SHALL NOT be enabled
 - AND no inbound port SHALL be published
 
 ### Requirement: Per-project package declarations
 
-For this requirement, a `.tau-packages` file is non-empty when it declares at least one package name after stripping comments, blank lines, and surrounding whitespace. A non-empty `.tau-packages` file SHALL select image `tau-agent-isolated-<image-name>-<base-hash>-<package-hash>`, where:
+For this requirement, an `.opencode-packages` file is non-empty when it declares at least one package name after stripping comments, blank lines, and surrounding whitespace. A non-empty `.opencode-packages` file SHALL select image `opencode-agent-isolated-<image-name>-<base-hash>-<package-hash>`, where:
 
-- `<image-name>` is the project basename when `tau-agent-isolated-<basename>-<8 hex>-<8 hex>` is a legal OCI reference path component (lowercase `[a-z0-9._-]` with no adjacent separators, at most 255 characters), and otherwise the sanitized basename;
-- `<package-hash>` is derived from the raw bytes of `.tau-packages`;
+- `<image-name>` is the project basename when `opencode-agent-isolated-<basename>-<8 hex>-<8 hex>` is a legal OCI reference path component (lowercase `[a-z0-9._-]` with no adjacent separators, at most 255 characters), and otherwise the sanitized basename;
+- `<package-hash>` is derived from the raw bytes of `.opencode-packages`;
 - `<base-hash>` is the first eight hexadecimal characters of the SHA-256 of the text formed by concatenating, in lexicographic path order, the hex-encoded SHA-256 digests (64 lowercase hex characters, no separators) of the raw bytes of each regular file directly under `config/` (including dotfiles), preceded by the digest of the repository `Containerfile`. It SHALL change when the content, or set, of those files changes and SHALL be stable when none does. Non-regular entries under `config/` SHALL be ignored.
 
-The launcher SHALL require interactive approval before building a missing package-specific image. When the launcher would otherwise derive a package image tag (a non-empty `.tau-packages` file is present and no `TAU_IMAGE` override is set), a missing repository `Containerfile` or `config/` directory SHALL abort the launch with an error rather than derive a tag whose freshness cannot be verified against the current inputs.
+The launcher SHALL require interactive approval before building a missing package-specific image. When the launcher would otherwise derive a package image tag (a non-empty `.opencode-packages` file is present and no `OPENCODE_SANDBOX_IMAGE` override is set), a missing repository `Containerfile` or `config/` directory SHALL abort the launch with an error rather than derive a tag whose freshness cannot be verified against the current inputs.
 
 The file format SHALL:
 
@@ -552,7 +547,7 @@ Comment-only and empty files SHALL use the shared base image.
 #### Scenario: Base input change invalidates the package image
 
 - GIVEN a project whose package image was built from an earlier build context
-- WHEN the content of `Containerfile` or a `config/` file changes and the `.tau-packages` content does not
+- WHEN the content of `Containerfile` or a `config/` file changes and the `.opencode-packages` content does not
 - THEN the launcher SHALL select a different image tag than the previously built one
 - AND building it SHALL require the same interactive approval as any missing package image
 
@@ -591,21 +586,21 @@ Comment-only and empty files SHALL use the shared base image.
 
 #### Scenario: Missing base inputs abort a package-tag launch
 
-- GIVEN the project has a non-empty `.tau-packages` file and no `TAU_IMAGE` override, and the repository `Containerfile` or the `config/` directory is missing
+- GIVEN the project has a non-empty `.opencode-packages` file and no `OPENCODE_SANDBOX_IMAGE` override, and the repository `Containerfile` or the `config/` directory is missing
 - WHEN the project launches
 - THEN the launcher SHALL abort with an error and SHALL NOT build or boot an image
 
 #### Scenario: Missing base inputs do not affect other launches
 
 - GIVEN the repository `Containerfile` or the `config/` directory is missing
-- WHEN a project without a non-empty `.tau-packages` file, or with a `TAU_IMAGE` override, launches
+- WHEN a project without a non-empty `.opencode-packages` file, or with an `OPENCODE_SANDBOX_IMAGE` override, launches
 - THEN the launcher SHALL proceed with the shared base image or the override and SHALL NOT abort
 
 ### Requirement: Superseded package images are pruned
 
-Package image tags are keyed by image name, base hash, and package hash, so same-image-name projects share one tag namespace: projects with identical base inputs and identical `.tau-packages` content use the same tag, while different package contents produce different tags under the same image-name prefix.
+Package image tags are keyed by image name, base hash, and package hash, so same-image-name projects share one tag namespace: projects with identical base inputs and identical `.opencode-packages` content use the same tag, while different package contents produce different tags under the same image-name prefix.
 
-When the launcher builds a package-specific image, it SHALL remove from the microsandbox cache every other image whose reference is `localhost/tau-agent-isolated-<image-name>-<package-hash>:latest` (legacy single-hash form of the current package content) or `localhost/tau-agent-isolated-<image-name>-<8 hex>-<package-hash>:latest` (any base version of the current package content). It SHALL NOT remove the image it just loaded. Inherent to the shared tag namespace, an image carrying the current package hash at another base hash is removed whether this project or a same-image-name project with identical `.tau-packages` content produced it. Images tagged with any other package hash — including those of same-image-name projects with different `.tau-packages` content and those of earlier package contents of this project — SHALL NOT be removed; in particular, a legacy single-hash tag whose hash differs from the current package hash SHALL NOT be removed. A failed removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be reported as an error.
+When the launcher builds a package-specific image, it SHALL remove from the microsandbox cache every other image whose reference is `localhost/opencode-agent-isolated-<image-name>-<package-hash>:latest` (legacy single-hash form of the current package content) or `localhost/opencode-agent-isolated-<image-name>-<8 hex>-<package-hash>:latest` (any base version of the current package content). It SHALL NOT remove the image it just loaded. Inherent to the shared tag namespace, an image carrying the current package hash at another base hash is removed whether this project or a same-image-name project with identical `.opencode-packages` content produced it. Images tagged with any other package hash — including those of same-image-name projects with different `.opencode-packages` content and those of earlier package contents of this project — SHALL NOT be removed; in particular, a legacy single-hash tag whose hash differs from the current package hash SHALL NOT be removed. A failed removal SHALL NOT fail the build, the load, or the launch, and SHALL NOT be reported as an error.
 
 #### Scenario: Base-triggered rebuild removes the superseded image
 
@@ -629,13 +624,13 @@ When the launcher builds a package-specific image, it SHALL remove from the micr
 
 #### Scenario: Same-image-name projects keep their package images
 
-- GIVEN two projects with the same image name and different `.tau-packages` contents both have cached package images
+- GIVEN two projects with the same image name and different `.opencode-packages` contents both have cached package images
 - WHEN the launcher rebuilds the package image for one of them
 - THEN the other project's image SHALL remain in the cache
 
 #### Scenario: Earlier package content image survives a rebuild
 
-- GIVEN the cache contains a package image tagged from earlier `.tau-packages` content of the same project
+- GIVEN the cache contains a package image tagged from earlier `.opencode-packages` content of the same project
 - WHEN the launcher rebuilds the package image for the current content
 - THEN the earlier-content image SHALL remain in the cache
 
@@ -654,7 +649,7 @@ When the launcher builds a package-specific image, it SHALL remove from the micr
 
 ### Requirement: Environment forwarding
 
-Variables named in `TAU_ENV_FILE` (default `${HOME}/.env`) SHALL be forwarded
+Variables named in `OPENCODE_SANDBOX_ENV_FILE` (default `${HOME}/.env`) SHALL be forwarded
 as guest `KEY=value` arguments except when the name is a declared project
 secret; the raw ordinary value for such a name SHALL be omitted regardless of
 source order. Ordinary and project values SHALL NOT be baked into the image
@@ -670,7 +665,7 @@ guarantee.
 
 #### Scenario: Project secret suppresses raw forwarding
 
-- GIVEN the same name is declared in `TAU_ENV_FILE` and in `secrets.env`,
+- GIVEN the same name is declared in `OPENCODE_SANDBOX_ENV_FILE` and in `secrets.env`,
   and the pair's policy covers that name
 - WHEN the launcher constructs guest environment arguments
 - THEN it SHALL omit the raw ordinary value for that name
@@ -684,19 +679,19 @@ guarantee.
 
 ### Requirement: Configurable resources
 
-The sandbox SHALL default to four virtual CPUs, 8 GB memory, and 1024 processes. `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` SHALL override these defaults.
+The sandbox SHALL default to four virtual CPUs, 8 GB memory, and 1024 processes. `OPENCODE_SANDBOX_CPUS`, `OPENCODE_SANDBOX_MEM`, and `OPENCODE_SANDBOX_PIDS` SHALL override these defaults.
 
 ### Requirement: Reset
 
-`./run.sh --reset` SHALL remove the project's home, session, and log volumes and exit successfully when any volume is already absent. Host Tau and `.agents` configuration SHALL remain untouched.
+`./run.sh --reset` SHALL remove the project's home, session, and log volumes and exit successfully when any volume is already absent. Host opencode config SHALL remain untouched.
 
 ### Requirement: Image build and load
 
-When the selected image is absent from the microsandbox cache, the launcher SHALL build it with Podman and load it through `podman save | msb load`. `TAU_IMAGE` SHALL bypass package processing and automatic image management and SHALL be passed to `msb run` unchanged.
+When the selected image is absent from the microsandbox cache, the launcher SHALL build it with Podman and load it through `podman save | msb load`. `OPENCODE_SANDBOX_IMAGE` SHALL bypass package processing and automatic image management and SHALL be passed to `msb run` unchanged.
 
 ### Requirement: Project secret documentation
 
-User-facing documentation SHALL describe `TAU_PROJECTS_DIR`, the exact host
+User-facing documentation SHALL describe `OPENCODE_SANDBOX_PROJECTS_DIR`, the exact host
 mapping, no inheritance, the paired-sources contract (sourced `secrets.env`,
 runtime-native `secrets.yaml` passed through via `--secret-conf`), the
 reserved-name set, ordinary-forwarding suppression, placeholders,
