@@ -49,7 +49,7 @@ skip_without_virtualization = pytest.mark.skipif(
 @pytest.fixture
 def sandbox_home(tmp_path):
     """A fake host $HOME per test so run.sh never reads the real user's
-    ~/.env, ~/.config/opencode, or ~/.agents, and so env/config mounts are isolated."""
+    ~/.env or ~/.config/opencode, and so env/config mounts are isolated."""
     home = tmp_path / "home"
     home.mkdir()
     return home

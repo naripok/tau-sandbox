@@ -661,9 +661,9 @@ def test_entrypoint_manifest_prune_removes_stale_sync_entries(
     longer exists removes exactly that resource while names still present on
     the host survive. This pins the entrypoint bootstrap synchronization
     contract while the read loop is refactored."""
-    taudir = _run_manifest_prune(tmp_path, manifest, bootstrap_names)
+    configdir = _run_manifest_prune(tmp_path, manifest, bootstrap_names)
     for name in ("kept.txt", "stale.txt", "stray.txt"):
-        assert (taudir / name).exists() == (name in surviving)
+        assert (configdir / name).exists() == (name in surviving)
 
 
 def test_entrypoint_manifest_prune_ignores_unterminated_final_record(tmp_path):
@@ -672,9 +672,9 @@ def test_entrypoint_manifest_prune_ignores_unterminated_final_record(tmp_path):
     sandbox can write the manifest between starts, and a mapfile rewrite would
     treat that partial record as a sync entry and delete the corresponding
     resource; this test is red against such rewrites."""
-    taudir = _run_manifest_prune(tmp_path, b"stale.txt\nstray.txt")
-    assert not (taudir / "stale.txt").exists()
-    assert (taudir / "stray.txt").exists()
+    configdir = _run_manifest_prune(tmp_path, b"stale.txt\nstray.txt")
+    assert not (configdir / "stale.txt").exists()
+    assert (configdir / "stray.txt").exists()
 
 
 def test_entrypoint_has_required_directives():

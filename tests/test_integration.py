@@ -251,7 +251,9 @@ class TestHostConfigIsolation:
             ],
         )
         assert result.returncode == 0, result.stderr
-        assert host_credentials.read_text() == '{"openrouter": "sk-host-token"}\n'
+        assert host_credentials.read_text() == (
+            '{"openrouter": {"type": "api", "key": "sk-host-token"}}\n'
+        )
         result = run_sandbox(
             tmp_path, sandbox_home, ["cat", "/home/opencode/.local/share/opencode/auth.json"]
         )
@@ -274,7 +276,9 @@ class TestHostConfigIsolation:
         )
         result = run_sandbox(tmp_path, sandbox_home, ["python", "-c", script])
         assert result.returncode == 0, result.stderr
-        assert host_credentials.read_text() == '{"openrouter": "host-token"}\n'
+        assert host_credentials.read_text() == (
+            '{"openrouter": {"type": "api", "key": "host-token"}}\n'
+        )
         result = run_sandbox(
             tmp_path, sandbox_home, ["cat", "/home/opencode/.local/share/opencode/auth.json"]
         )

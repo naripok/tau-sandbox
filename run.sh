@@ -16,15 +16,26 @@ IMAGE_NAME="${OPENCODE_SANDBOX_IMAGE:-opencode-agent-isolated}"
 # the nearest ancestor of the launch directory whose `.opencode` entry is a
 # directory (a real per-project config or a symlink to one) supplies the
 # config directory. This mirrors the .opencode-packages project-local
-# convention. OPENCODE_SANDBOX_CONFIG_DIR always wins; without a match the
-# default (${XDG_CONFIG_HOME:-~/.config}/opencode) applies.
+# convention. An entry inside the launch directory itself is skipped: it is
+# project config that opencode reads natively from /workspace, and syncing it
+# into the guest global config would load it in two scopes. This keeps the
+# discovery sync for config that lives outside the project tree.
+# OPENCODE_SANDBOX_CONFIG_DIR always wins; without a match the default
+# (${XDG_CONFIG_HOME:-~/.config}/opencode) applies.
+PROJECT_PATH="$(realpath "$(pwd)")"
 CONFIG_DIR="${OPENCODE_SANDBOX_CONFIG_DIR:-}"
 if [ -z "$CONFIG_DIR" ]; then
     probe_dir="$(pwd)"
     while :; do
         if [ -d "$probe_dir/.opencode" ]; then
-            CONFIG_DIR="$probe_dir/.opencode"
-            break
+            candidate="$(realpath "$probe_dir/.opencode")"
+            case "$candidate" in
+                "$PROJECT_PATH" | "$PROJECT_PATH"/*) ;;
+                *)
+                    CONFIG_DIR="$candidate"
+                    break
+                    ;;
+            esac
         fi
         parent="$(dirname "$probe_dir")"
         [ "$parent" = "$probe_dir" ] && break
@@ -52,12 +63,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # captured bootstrap entry list must reflect exactly the entries the launch
 # will snapshot.
 RAW_CONFIG_DIR="$CONFIG_DIR"
-[ -d "$CONFIG_DIR" ] && CONFIG_DIR="$(realpath "$CONFIG_DIR")"
 
 # Derive persistent volume names from the project path.
 # The basename makes "msb volume ls" output meaningful.
 # The 8-char hash suffix guarantees uniqueness.
-PROJECT_PATH="$(realpath "$(pwd)")"
 PROJECT_NAME="$(basename "$PROJECT_PATH")"
 PROJECT_HASH="$(echo "$PROJECT_PATH" | sha256sum | cut -c1-8)"
 
@@ -65,13 +74,16 @@ sanitize_project_name() {
     # Map an arbitrary basename to a safe name: lowercase, every run of
     # characters outside [a-z0-9] collapsed to a single underscore, leading
     # and trailing underscores removed, truncated so derived names fit a
-    # 255-byte path component and a 255-char OCI reference. Uniqueness is
-    # carried by the path hash, not by the name.
+    # 255-byte path component and a 255-char OCI reference. The longest
+    # derived name is the per-project image "opencode-agent-isolated-<name>-"
+    # plus two 8-char hashes and separators (24 + 18 fixed characters), so
+    # the name is truncated to 255 - 42 = 213. Uniqueness is carried by the
+    # path hash, not by the name.
     local out
     out="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cs 'a-z0-9' '_')"
     out="${out#_}"
     out="${out%_}"
-    out="${out:0:218}"
+    out="${out:0:213}"
     out="${out%_}"
     [ -n "$out" ] || out="project"
     printf '%s' "$out"

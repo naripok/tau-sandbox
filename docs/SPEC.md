@@ -14,7 +14,7 @@ For a project at resolved path `<path>`, `run.sh` SHALL use the first eight hexa
 - `opencode-sessions-<volume-name>-<hash>` mounted at `/var/lib/opencode-sandbox/sessions` and linked from `/home/opencode/.local/share/opencode/storage`
 - `opencode-logs-<volume-name>-<hash>` mounted at `/var/lib/opencode-sandbox/logs` and linked from `/home/opencode/.local/share/opencode/log`
 
-The project volume name SHALL be the project basename when it is a legal msb volume name (non-empty, only `[A-Za-z0-9._-]`, at most 233 characters so the full volume name fits a 255-byte path component), and otherwise the sanitized basename. The sanitized basename SHALL be the lowercase form in which every run of characters outside `[a-z0-9]` is replaced by a single `_`, with leading and trailing `_` removed and the result truncated to 218 characters; an empty result SHALL become `project`. Uniqueness SHALL be carried by `<hash>`, so sanitization may map distinct basenames to the same name.
+The project volume name SHALL be the project basename when it is a legal msb volume name (non-empty, only `[A-Za-z0-9._-]`, at most 228 characters so the full volume name fits a 255-byte path component), and otherwise the sanitized basename. The sanitized basename SHALL be the lowercase form in which every run of characters outside `[a-z0-9]` is replaced by a single `_`, with leading and trailing `_` removed and the result truncated to 213 characters; an empty result SHALL become `project`. Uniqueness SHALL be carried by `<hash>`, so sanitization may map distinct basenames to the same name.
 
 #### Scenario: State survives separate runs
 
@@ -58,7 +58,7 @@ The `/workspace` mount SHALL propagate guest-applied permission bits to the host
 
 ### Requirement: Project-local config discovery
 
-When `OPENCODE_SANDBOX_CONFIG_DIR` is unset, `run.sh` SHALL select as the host opencode config directory the `.opencode` entry of the nearest ancestor of the launch directory, where the launch directory itself counts as an ancestor and `.opencode` entries are matched as directories with symlinks followed; a dangling `.opencode` symlink SHALL NOT match. When no ancestor matches, `${XDG_CONFIG_HOME:-${HOME}/.config}/opencode` SHALL apply. An explicitly set `OPENCODE_SANDBOX_CONFIG_DIR` SHALL take precedence over discovery, and discovery SHALL NOT change the resolved project path used for volume derivation.
+When `OPENCODE_SANDBOX_CONFIG_DIR` is unset, `run.sh` SHALL select as the host opencode config directory the `.opencode` entry of the nearest ancestor of the launch directory, where the launch directory itself counts as an ancestor and `.opencode` entries are matched as directories with symlinks followed; a dangling `.opencode` symlink SHALL NOT match. An entry whose resolved path is the launch directory or lies inside it SHALL be skipped and discovery SHALL continue walking: that entry is project config opencode reads natively from `/workspace`, and the launcher SHALL NOT also sync it into the guest global config. When no ancestor matches, `${XDG_CONFIG_HOME:-${HOME}/.config}/opencode` SHALL apply. An explicitly set `OPENCODE_SANDBOX_CONFIG_DIR` SHALL take precedence over discovery, and discovery SHALL NOT change the resolved project path used for volume derivation.
 
 #### Scenario: Nearest project root config is discovered
 
@@ -84,6 +84,13 @@ When `OPENCODE_SANDBOX_CONFIG_DIR` is unset, `run.sh` SHALL select as the host o
 - WHEN `run.sh` launches
 - THEN `${XDG_CONFIG_HOME:-${HOME}/.config}/opencode` SHALL be the host opencode config directory
 
+#### Scenario: Launch-directory config is not double-synced
+
+- GIVEN `<launch-dir>/.opencode` is a directory and no ancestor above the launch directory has one
+- WHEN `run.sh` launches from `<launch-dir>` with `OPENCODE_SANDBOX_CONFIG_DIR` unset
+- THEN the launch-directory `.opencode` SHALL NOT be snapshotted into the guest global config
+- AND the default host config directory SHALL supply the bootstrap sources
+
 #### Scenario: Explicit override beats discovery
 
 - GIVEN `<project-root>/.opencode` is a directory and `OPENCODE_SANDBOX_CONFIG_DIR` is set to `<override-dir>`
@@ -92,7 +99,7 @@ When `OPENCODE_SANDBOX_CONFIG_DIR` is unset, `run.sh` SHALL select as the host o
 
 ### Requirement: Host opencode config synchronizes into writable project config
 
-When `OPENCODE_SANDBOX_CONFIG_DIR` exists, each regular top-level file or directory SHALL be copied to a temporary host-side snapshot and mounted read-only at `/etc/opencode-sandbox/bootstrap/opencode/<name>`, except the credential file, opencode's generated install artifacts, and synchronization metadata. Symlinks SHALL be recursively dereferenced while creating the snapshot, allowing linked agents, commands, plugins, skills, and other config at any depth to synchronize without exposing broken host-absolute links inside the guest. Dangling symlinks SHALL fail startup, and special files SHALL be ignored. The snapshot SHALL exclude exactly:
+When `OPENCODE_SANDBOX_CONFIG_DIR` exists, each regular top-level file or directory SHALL be copied to a temporary host-side snapshot and mounted read-only at `/etc/opencode-sandbox/bootstrap/opencode/<name>`, except the credential file, opencode's generated install artifacts, and synchronization metadata. Symlinks SHALL be recursively dereferenced while creating the snapshot, allowing linked agents, commands, plugins, skills, and other config at any depth to synchronize without exposing broken host-absolute links inside the guest. A dangling link nested inside a snapshotted directory SHALL fail startup; a dangling top-level config entry SHALL be skipped, and special files SHALL be ignored. The snapshot SHALL exclude exactly:
 
 - `auth.json` (the credential file; it SHALL live only in the per-project home volume and SHALL never be mounted or bootstrapped).
 - opencode's generated install artifacts: `node_modules`, `package.json`, `package-lock.json`, `bun.lock`, and `.gitignore` (opencode installs its own per config directory).

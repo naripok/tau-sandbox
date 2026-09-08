@@ -24,7 +24,8 @@ RUN pacman -Syu --noconfirm && \
 # The release asset follows the build architecture (glibc builds; the musl
 # variants are for musl systems and never apply to Arch).
 ARG OPENCODE_VERSION=1.18.29
-RUN case "$(uname -m)" in \
+# set -o pipefail: a failed curl must fail the RUN, not feed tar an empty stream.
+RUN set -o pipefail && case "$(uname -m)" in \
       x86_64) OPENCODE_ARCH=x64 ;; \
       aarch64) OPENCODE_ARCH=arm64 ;; \
       *) echo "Error: unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \

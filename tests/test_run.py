@@ -301,8 +301,8 @@ def test_run_script_mounts_host_config_as_bootstrap_without_credentials(tmp_path
     nor bootstrapped, so each sandbox uses project-local credentials and
     installs its own plugin dependencies."""
     (tmp_path / ".env").write_text("")
-    config_dir = tmp_path / ".opencode"
-    config_dir.mkdir()
+    config_dir = tmp_path / "home" / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
     (config_dir / "skills").mkdir()
     (config_dir / "settings.json").write_text("{}\n")
     (config_dir / "auth.json").write_text('{"openai": {"type": "api", "key": "sk-host"}}\n')
@@ -310,7 +310,7 @@ def test_run_script_mounts_host_config_as_bootstrap_without_credentials(tmp_path
     (config_dir / "package.json").write_text("{}\n")
     (config_dir / ".gitignore").write_text("node_modules\n")
 
-    result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
+    result, msb_log, _ = invoke_run("bash", cwd=tmp_path, home=tmp_path / "home")
     assert result.returncode == 0
     run_line = next(line for line in msb_log if line.startswith("msb run"))
     bootstrap = "/etc/opencode-sandbox/bootstrap/opencode"
@@ -331,8 +331,8 @@ def test_run_script_mounts_host_config_as_bootstrap_without_credentials(tmp_path
 def test_run_script_follows_host_config_symlinks(tmp_path):
     """Linked config resources are mounted by target under their link names."""
     (tmp_path / ".env").write_text("")
-    config_dir = tmp_path / ".opencode"
-    config_dir.mkdir()
+    config_dir = tmp_path / "home" / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
     targets = tmp_path / "config-targets"
     targets.mkdir()
     skills = targets / "skills"
@@ -351,7 +351,8 @@ def test_run_script_follows_host_config_symlinks(tmp_path):
 
     snapshot_check = tmp_path / "snapshot-check"
     result, msb_log, _ = invoke_run(
-        "bash", cwd=tmp_path, env={"MSB_SNAPSHOT_CHECK": str(snapshot_check)}
+        "bash", cwd=tmp_path, home=tmp_path / "home",
+        env={"MSB_SNAPSHOT_CHECK": str(snapshot_check)},
     )
     assert result.returncode == 0
     assert snapshot_check.read_text() == "dereferenced\n"
@@ -384,7 +385,7 @@ def test_run_script_skips_missing_host_config_mounts(tmp_path):
 def test_run_script_discovers_nearest_ancestor_opencode_config(tmp_path):
     """With OPENCODE_SANDBOX_CONFIG_DIR unset, the closest ancestor's .opencode directory
     supplies the host config; the snapshotted settings.json proves which
-    dir won and credentials.json is never mounted."""
+    dir won and auth.json is never mounted."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
     workdir = project / "nested" / "dir"
@@ -404,6 +405,36 @@ def test_run_script_discovers_nearest_ancestor_opencode_config(tmp_path):
     assert "auth.json" not in run_line
     assert "OPENCODE_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert 'settings.json\t{"scope": "project"}' in snapshot_contents.read_text()
+
+
+def test_run_script_launch_directory_config_is_not_double_synced(tmp_path):
+    """A `.opencode` directory at the launch directory is project config
+    opencode reads natively from /workspace; the launcher skips it and
+    syncs the default host config instead, so the same files never load
+    in two config scopes."""
+    (tmp_path / ".env").write_text("")
+    home = tmp_path / "home"
+    home_config = home / ".config" / "opencode"
+    home_config.mkdir(parents=True)
+    (home_config / "settings.json").write_text('{"scope": "home"}\n')
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".opencode").mkdir()
+    (project / ".opencode" / "settings.json").write_text('{"scope": "project"}\n')
+
+    snapshot_contents = tmp_path / "snapshot-contents"
+    result, msb_log, _ = invoke_run(
+        "bash", cwd=project, home=home,
+        env={"MSB_SNAPSHOT_CONTENTS": str(snapshot_contents)},
+    )
+    assert result.returncode == 0
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    bootstrap = "/etc/opencode-sandbox/bootstrap/opencode"
+    assert f":{bootstrap}/settings.json:ro" in run_line
+    assert f"{project.resolve()}/.opencode" not in run_line
+    snapshot = snapshot_contents.read_text()
+    assert 'settings.json\t{"scope": "home"}' in snapshot
+    assert '{"scope": "project"}' not in snapshot
 
 
 def test_run_script_innermost_ancestor_opencode_config_wins(tmp_path):
@@ -579,6 +610,28 @@ def test_dot_directory_without_packages_keeps_raw_volume_names(tmp_path):
     assert "opencode-persist-.dotproj-" in run_line
     assert "opencode-sessions-.dotproj-" in run_line
     assert "opencode-logs-.dotproj-" in run_line
+
+
+def test_long_basename_image_name_fits_oci_limit(tmp_path):
+    """A basename that is legal for volumes but too long for the image name
+    is truncated by sanitize so the per-project image reference stays within
+    the 255-character OCI bound (24-char image prefix + 18 chars of hashes
+    leave 213 for the name)."""
+    project = tmp_path / ("p" * 216)
+    project.mkdir()
+    (project / ".opencode-packages").write_text("cmake\n")
+    (project / ".env").write_text("")
+    pkg_hash = hashlib.sha256((project / ".opencode-packages").read_bytes()).hexdigest()[:8]
+
+    rc, output, msb_log, _ = invoke_run_tty(cwd=project, answer="y\n")
+    assert rc == 0, f"output: {output}"
+
+    expected_image = f"opencode-agent-isolated-{'p' * 213}-{_base_hash()}-{pkg_hash}"
+    assert len(expected_image) <= 255
+    run_line = next(line for line in msb_log if line.startswith("msb run"))
+    assert f"localhost/{expected_image}:latest -- bash" in run_line
+    # The 216-char basename is a legal msb volume name, so volumes keep it.
+    assert f"opencode-persist-{'p' * 216}-" in run_line
 
 
 def test_uppercase_directory_image_name_is_lowercased(tmp_path):
@@ -829,7 +882,7 @@ def test_shared_base_launch_ignores_missing_base_inputs(tmp_path):
     assert "localhost/opencode-agent-isolated:latest -- bash" in run_line
 
 
-def test_tau_image_override_ignores_missing_base_inputs(tmp_path):
+def test_sandbox_image_override_ignores_missing_base_inputs(tmp_path):
     """OPENCODE_SANDBOX_IMAGE bypasses package processing entirely, so a missing
     Containerfile must not abort an override launch."""
     repo = _stub_repo(tmp_path, "stub-repo", containerfile=False)
@@ -886,7 +939,7 @@ def test_packages_reject_dangerous_characters(tmp_path):
     assert not podman_log
 
 
-def test_tau_image_override_bypasses_packages(tmp_path):
+def test_sandbox_image_override_bypasses_packages(tmp_path):
     """OPENCODE_SANDBOX_IMAGE passes the reference through and never builds."""
     (tmp_path / ".opencode-packages").write_text("cmake\n")
     (tmp_path / ".env").write_text("")

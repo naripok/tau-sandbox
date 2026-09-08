@@ -199,7 +199,7 @@ All config is controlled via environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `OPENCODE_SANDBOX_IMAGE` | `opencode-agent-isolated` | Full image reference used by msb. Bypasses `.opencode-packages` and automatic build/load. |
-| `OPENCODE_SANDBOX_CONFIG_DIR` | nearest ancestor `.opencode`, else `~/.config/opencode` | Host opencode config refreshed at each start. When unset, the nearest ancestor directory with an `.opencode` config dir is used. `auth.json` stays project-local. |
+| `OPENCODE_SANDBOX_CONFIG_DIR` | nearest ancestor `.opencode`, else `${XDG_CONFIG_HOME:-~/.config}/opencode` | Host opencode config refreshed at each start. When unset, the nearest ancestor directory with an `.opencode` config dir is used. `auth.json` stays project-local. |
 | `OPENCODE_SANDBOX_ENV_FILE` | `~/.env` | Env file whose variables are forwarded into the sandbox |
 | `OPENCODE_SANDBOX_PROJECTS_DIR` | `${HOME}/Projects` | Projects root for protected project-secret discovery. An explicitly empty value is invalid. A relative value resolves from the launch directory. |
 | `OPENCODE_SANDBOX_CPUS` | `4` | Virtual CPUs for the sandbox |
@@ -211,7 +211,7 @@ All config is controlled via environment variables:
 
 When `OPENCODE_SANDBOX_CONFIG_DIR` is not set, `run.sh` walks up from the launch directory. It uses the nearest ancestor's `.opencode` directory as the host opencode config directory. This per-project config can be a real directory or a symlink to a config world outside the project tree. This mirrors the project-local `.opencode-packages` convention. The sandbox adapts to the project you launch it from. `OPENCODE_SANDBOX_CONFIG_DIR` always overrides discovery.
 
-opencode itself also reads `<project>/.opencode` directories inside the workspace natively. The discovery sync exists for config that lives outside the project tree.
+opencode itself also reads `<project>/.opencode` directories inside the workspace natively. The launcher therefore skips a discovered `.opencode` at the launch directory or below it: that config is project config opencode already reads from `/workspace`, and syncing it into the guest global config would load it in two scopes. The discovery sync exists for config that lives outside the launch directory, for example a symlinked config world.
 
 ### Environment Variables
 
@@ -271,7 +271,7 @@ Project-secret sources (`~/.<project>/secrets.env` and `secrets.yaml`) are never
 
 ### Host Config and Isolated State
 
-`run.sh` copies existing regular top-level host config files and directories into a temporary host-side snapshot. The snapshot excludes the credential file, opencode's generated install artifacts (`node_modules`, `package.json`, `package-lock.json`, `bun.lock`, `.gitignore`), and internal synchronization metadata. `run.sh` dereferences symlinks at every depth while the host paths are available. Linked agents, commands, plugins, skills, and other config become ordinary snapshot files and directories. Dangling links cause startup to fail. They do not silently install broken resources.
+`run.sh` copies existing regular top-level host config files and directories into a temporary host-side snapshot. The snapshot excludes the credential file, opencode's generated install artifacts (`node_modules`, `package.json`, `package-lock.json`, `bun.lock`, `.gitignore`), and internal synchronization metadata. `run.sh` dereferences symlinks at every depth while the host paths are available. Linked agents, commands, plugins, skills, and other config become ordinary snapshot files and directories. A dangling link nested inside a snapshotted directory fails startup, so broken resources are never installed. A dangling top-level config entry is skipped.
 
 Snapshot entries are mounted individually and read-only under `/etc/opencode-sandbox/bootstrap/opencode`. On every start, the entrypoint replaces host-managed project copies with the current host versions. The entrypoint also removes resources deleted from the host. Config created only inside the sandbox remains persistent. Sandbox edits to host-managed config are writable during a run. The next start replaces them from the host.
 

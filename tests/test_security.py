@@ -25,8 +25,8 @@ def test_only_expected_paths_are_mounted(tmp_path):
     credential file and opencode's generated install artifacts are never
     mounted."""
     (tmp_path / ".env").write_text("")
-    config_dir = tmp_path / ".opencode"
-    config_dir.mkdir()
+    config_dir = tmp_path / "home" / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
     (config_dir / "settings.json").write_text("{}\n")
     (config_dir / "auth.json").write_text("{}\n")
     (config_dir / "node_modules").mkdir()
@@ -34,7 +34,7 @@ def test_only_expected_paths_are_mounted(tmp_path):
     outside.write_text("secret\n")
     (config_dir / "external-link").symlink_to(outside)
 
-    result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
+    result, msb_log, _ = invoke_run("bash", cwd=tmp_path, home=tmp_path / "home")
     assert result.returncode == 0
     run_line = _run_line(msb_log)
     # workspace, home, settings.json, external-link, sessions, logs,
@@ -65,12 +65,12 @@ def test_host_config_is_bootstrap_only(tmp_path):
     """Host config mounts read-only outside opencode's writable home path;
     the host credential file is never mounted."""
     (tmp_path / ".env").write_text("")
-    config_dir = tmp_path / ".opencode"
-    config_dir.mkdir()
+    config_dir = tmp_path / "home" / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
     (config_dir / "settings.json").write_text("{}\n")
     (config_dir / "auth.json").write_text("{}\n")
 
-    result, msb_log, _ = invoke_run("bash", cwd=tmp_path)
+    result, msb_log, _ = invoke_run("bash", cwd=tmp_path, home=tmp_path / "home")
     run_line = _run_line(msb_log)
     assert ":/etc/opencode-sandbox/bootstrap/opencode/settings.json:ro" in run_line
     assert f"{config_dir.resolve()}/settings.json:" not in run_line

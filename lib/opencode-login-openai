@@ -106,8 +106,9 @@ def sanitize_project_name(name: str) -> str:
 
     Duplicates run.sh's sanitize_project_name byte-for-byte: ASCII
     lowercase, every run of bytes outside [a-z0-9] collapsed to one
-    underscore, leading/trailing underscores stripped, truncation at 218
-    chars, and the "project" default. Names are bytes in bash, so
+    underscore, leading/trailing underscores stripped, truncation at 213
+    chars (the 255-char OCI bound minus the longest image-name prefix),
+    and the "project" default. Names are bytes in bash, so
     surrogateescape round-trips arbitrary host filenames exactly.
     """
     raw = name.encode("utf-8", "surrogateescape").translate(_UPPER_TO_LOWER)
@@ -121,7 +122,7 @@ def sanitize_project_name(name: str) -> str:
         out.pop(0)
     while out and out[-1] == 95:
         out.pop()
-    out = out[:218]
+    out = out[:213]
     while out and out[-1] == 95:
         out.pop()
     if not out:
