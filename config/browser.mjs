@@ -165,12 +165,13 @@ async function pageTargets() {
 async function currentTarget() {
   const pages = await pageTargets();
   const current = readState(CURRENT_FILE);
-  let target = pages.find((t) => t.targetId === current) ?? pages[0];
+  let target = pages.find((t) => t.id === current) ?? pages[0];
   if (!target) {
     const endpoint = readState(ENDPOINT_FILE);
     target = await httpJson(`http://127.0.0.1:${endpointPort(endpoint)}/json/new?url=about:blank`, 'PUT');
   }
-  writeState(CURRENT_FILE, target.targetId);
+  // /json/list and /json/new report the target id as "id".
+  writeState(CURRENT_FILE, target.id);
   return target;
 }
 
@@ -200,24 +201,24 @@ const PICK_FN = String.raw`() => {
   return [...document.querySelectorAll('a[href], button, input, select, textarea, summary, [role], [onclick], [contenteditable]')].filter(visible);
 }`;
 
-const OUTLINE_JS = String.raw`(els => els.map((el, i) => {
+const OUTLINE_JS = String.raw`((${PICK_FN})()).map((el, i) => {
   const role = el.getAttribute('role') || (el.tagName === 'INPUT' && el.type ? 'input:' + el.type : el.tagName.toLowerCase());
   const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.value
     || el.getAttribute('title') || el.textContent || (el.tagName === 'A' ? el.getAttribute('href') : ''))
     .trim().replace(/\s+/g, ' ').slice(0, 80);
   return { i, role, name };
-}))(${PICK_FN})()`;
+})`;
 
-const clickJs = (n) => String.raw`(els => {
-  const el = els[${n}];
+const clickJs = (n) => String.raw`(() => {
+  const el = (${PICK_FN})()[${n}];
   if (!el) return null;
   el.scrollIntoView({ block: 'center' });
   const r = el.getBoundingClientRect();
   return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
-})(${PICK_FN})()`;
+})()`;
 
-const focusJs = (n) => String.raw`(els => {
-  const el = els[${n}];
+const focusJs = (n) => String.raw`(() => {
+  const el = (${PICK_FN})()[${n}];
   if (!el) return null;
   el.focus();
   if (typeof el.select === 'function') el.select();
@@ -226,12 +227,12 @@ const focusJs = (n) => String.raw`(els => {
     const r = document.createRange(); r.selectNodeContents(el); s.addRange(r);
   }
   return true;
-})(${PICK_FN})()`;
+})()`;
 
-const valueJs = (n) => String.raw`(els => {
-  const el = els[${n}];
+const valueJs = (n) => String.raw`(() => {
+  const el = (${PICK_FN})()[${n}];
   return JSON.stringify({ v: String(el ? (el.value ?? el.textContent ?? '') : '').slice(0, 120) });
-})(${PICK_FN})()`;
+})()`;
 
 const KEY_CODES = {
   Enter: { code: 'Enter', vk: 13, text: '\r' },
@@ -295,9 +296,9 @@ const cmdHtml = () => cmdEvalExpr('document.documentElement.outerHTML', (v) => c
 const cmdUrl = () => cmdEvalExpr('location.href', (v) => console.log(v));
 const cmdTitle = () => cmdEvalExpr('document.title', (v) => console.log(v));
 
-const cmdOutline = () => cmdEvalExpr(OUTLINE_JS, (v) => {
-  const els = JSON.parse(v);
-  if (!els.length) return console.log('no interactive elements');
+const cmdOutline = () => cmdEvalExpr(OUTLINE_JS, (els) => {
+  // returnByValue deserializes: the page array arrives as a real array.
+  if (!Array.isArray(els) || !els.length) return console.log('no interactive elements');
   for (const { i, role, name } of els) console.log(`[${i}] ${role} ${name ? `"${name}"` : ''}`.trimEnd());
 });
 
@@ -359,7 +360,7 @@ async function cmdTabs() {
   const pages = await pageTargets();
   const current = readState(CURRENT_FILE);
   pages.forEach((t, i) => {
-    console.log(`[${i}]${t.targetId === current ? '*' : ' '} ${t.title || '(untitled)'} — ${t.url}`);
+    console.log(`[${i}]${t.id === current ? '*' : ' '} ${t.title || '(untitled)'} — ${t.url}`);
   });
 }
 
@@ -367,24 +368,33 @@ async function cmdTab(nArg) {
   const n = indexArg(nArg);
   const pages = await pageTargets();
   if (!pages[n]) throw new Error(`no tab [${n}]; run "browser tabs"`);
-  writeState(CURRENT_FILE, pages[n].targetId);
+  writeState(CURRENT_FILE, pages[n].id);
   console.log(`${pages[n].title || '(untitled)'} — ${pages[n].url}`);
 }
 
 async function cmdNewtab(url) {
   url = normalizeUrl(url);
   const endpoint = await ensureEndpoint();
-  const target = await httpJson(`http://127.0.0.1:${endpointPort(endpoint)}/json/new?url=${encodeURIComponent(url)}`, 'PUT');
-  writeState(CURRENT_FILE, target.targetId);
+  // Chromium ignores /json/new?url=, so create the tab then navigate via CDP.
+  const target = await httpJson(`http://127.0.0.1:${endpointPort(endpoint)}/json/new`, 'PUT');
+  writeState(CURRENT_FILE, target.id);
+  const cdp = await connect(target.webSocketDebuggerUrl);
+  try {
+    await cdp.send('Page.enable');
+    const nav = await cdp.send('Page.navigate', { url });
+    if (nav.errorText) throw new Error(nav.errorText);
+  } finally {
+    cdp.close();
+  }
   console.log(`opened ${url}`);
 }
 
 async function cmdClosetab(nArg) {
   const pages = await pageTargets();
-  const n = nArg === undefined ? pages.findIndex((t) => t.targetId === readState(CURRENT_FILE)) : indexArg(nArg);
+  const n = nArg === undefined ? pages.findIndex((t) => t.id === readState(CURRENT_FILE)) : indexArg(nArg);
   if (!pages[n]) throw new Error(`no tab [${n}]; run "browser tabs"`);
-  await fetch(`http://127.0.0.1:${endpointPort(readState(ENDPOINT_FILE))}/json/close/${pages[n].targetId}`);
-  if (pages[n].targetId === readState(CURRENT_FILE)) fs.rmSync(CURRENT_FILE, { force: true });
+  await fetch(`http://127.0.0.1:${endpointPort(readState(ENDPOINT_FILE))}/json/close/${pages[n].id}`);
+  if (pages[n].id === readState(CURRENT_FILE)) fs.rmSync(CURRENT_FILE, { force: true });
   console.log(`closed [${n}] ${pages[n].url}`);
 }
 
