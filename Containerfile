@@ -8,6 +8,7 @@ RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
       python python-pip uv nodejs npm git openssh bash which fd ripgrep \
       diffutils gcc make rsync ast-grep curl ca-certificates tar \
+      chromium ttf-liberation \
       ${EXTRA_PACKAGES} || \
     { echo "" >&2; \
       echo "Error: package installation failed." >&2; \
@@ -47,10 +48,13 @@ COPY config/.bashrc /etc/tau-sandbox/.bashrc
 # Tau wrapper: always injects the immutable sandbox reference.
 COPY config/tau-wrapper.py /usr/local/bin/tau
 
+# Browser CLI: zero-dependency CDP client for the image's chromium.
+COPY config/browser.mjs /usr/local/bin/browser
+
 # Entrypoint: initializes the persistent home, sets up the environment, and
 # then execs the user command.
 COPY config/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 755 /usr/local/bin/tau /usr/local/bin/entrypoint.sh && \
+RUN chmod 755 /usr/local/bin/tau /usr/local/bin/entrypoint.sh /usr/local/bin/browser && \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 
 ENV HOME=/home/tau

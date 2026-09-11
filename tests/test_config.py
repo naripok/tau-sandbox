@@ -499,7 +499,7 @@ def test_append_system_doc_describes_ephemeral_rootfs():
 
 def test_append_system_doc_lists_installed_tools():
     text = _read("APPEND_SYSTEM.md")
-    for tool in ("Python", "uv", "Node.js", "tau", "git", "ast-grep", "ripgrep"):
+    for tool in ("Python", "uv", "Node.js", "tau", "git", "ast-grep", "ripgrep", "browser", "Chromium"):
         assert tool in text
 
 

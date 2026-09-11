@@ -42,6 +42,8 @@ def test_containerfile_has_required_tool_packages():
         "gcc",
         "make",
         "curl",
+        "chromium",
+        "ttf-liberation",
     ):
         assert pkg in text
 
@@ -64,6 +66,7 @@ def test_containerfile_has_launchers():
     text = _text()
     assert "COPY config/entrypoint.sh" in text
     assert "COPY config/tau-wrapper.py /usr/local/bin/tau" in text
+    assert "COPY config/browser.mjs /usr/local/bin/browser" in text
     assert 'ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' in text
 
 
