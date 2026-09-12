@@ -68,6 +68,14 @@ async function ensureEndpoint() {
   }
   for (const f of [ENDPOINT_FILE, PID_FILE, CURRENT_FILE]) fs.rmSync(f, { force: true });
 
+  // The profile lives in the persistent home and may carry singleton locks
+  // from the previous VM run (the hostname changes across restarts, so
+  // Chromium treats it as "in use on another computer" and stalls). Only one
+  // daemon uses the profile at a time; stale locks are always safe to clear.
+  for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    fs.rmSync(path.join(PROFILE_DIR, f), { force: true });
+  }
+
   const log = fs.openSync(LOG_FILE, 'w');
   const child = spawn(findBin(), [
     '--headless', '--remote-debugging-port=0', '--no-sandbox', '--disable-gpu',
@@ -88,6 +96,8 @@ async function ensureEndpoint() {
     }
     await sleep(100);
   }
+  const pid = Number(readState(PID_FILE));
+  try { if (pid) process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
   throw new Error(`Chromium did not report a DevTools endpoint within 15s (log: ${LOG_FILE})`);
 }
 
