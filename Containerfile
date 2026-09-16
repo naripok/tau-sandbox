@@ -27,7 +27,7 @@ RUN pacman -Syu --noconfirm && \
 # on the project's next run.
 # Installed into a dedicated venv: Arch's python-pip is PEP 668
 # externally-managed, so system-wide pip installs are rejected.
-ARG TAU_REF=b969be4c6bad18970e118a8f435c21c46cb1f25c
+ARG TAU_REF=bbcfcfaef8b8cf3647d92a8a1481de0d4fccba3e
 RUN python -m venv /opt/tau && \
     /opt/tau/bin/pip install --no-cache-dir "git+https://github.com/naripok/tau@${TAU_REF}"
 
