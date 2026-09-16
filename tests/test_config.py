@@ -18,7 +18,9 @@ closed. That the allowed dialect actually boots
 the sandbox is verified end-to-end by the integration suite; this guard
 only proves the entrypoint stays inside the dialect.
 """
+import hashlib
 import json
+import shutil
 import os
 import pathlib
 import re
@@ -499,7 +501,7 @@ def test_append_system_doc_describes_ephemeral_rootfs():
 
 def test_append_system_doc_lists_installed_tools():
     text = _read("APPEND_SYSTEM.md")
-    for tool in ("Python", "uv", "Node.js", "tau", "git", "ast-grep", "ripgrep", "browser", "Chromium"):
+    for tool in ("Python", "uv", "Node.js", "tau", "git", "ast-grep", "ripgrep", "certutil", "browser", "Chromium"):
         assert tool in text
 
 
@@ -759,6 +761,168 @@ def test_entrypoint_removes_stale_credentials_symlink(tmp_path, mode, survives):
     if mode == "valid-symlink":
         assert credentials.is_symlink()
         assert credentials.readlink() == pathlib.Path("real.json")
+
+
+def _write_test_ca(tmp_path: pathlib.Path, name: str) -> pathlib.Path:
+    certificate = tmp_path / f"{name}.crt"
+    key = tmp_path / f"{name}.key"
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-subj", f"/CN={name}", "-keyout", str(key), "-out", str(certificate),
+            "-days", "1",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return certificate
+
+
+def _run_browser_ca_sync(tmp_path: pathlib.Path, certificate: pathlib.Path) -> pathlib.Path:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    database = home / ".pki" / "nssdb"
+    subprocess.run(
+        ["bash", str(CONFIG_DIR / "sync-browser-ca.sh"), str(certificate), str(database)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return database
+
+
+def _nss_certificate_sha(database: pathlib.Path) -> str:
+    exported = subprocess.run(
+        [
+            "certutil", "-L", "-d", f"sql:{database}",
+            "-n", "tau-sandbox microsandbox CA", "-r",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(exported).hexdigest()
+
+
+def _certificate_sha(certificate: pathlib.Path) -> str:
+    der = subprocess.run(
+        ["openssl", "x509", "-in", str(certificate), "-outform", "DER"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(der).hexdigest()
+
+
+@pytest.mark.skipif(
+    not all(shutil.which(command) for command in ("certutil", "flock", "openssl")),
+    reason="NSS synchronization tools are unavailable",
+)
+def test_entrypoint_syncs_rotates_and_removes_microsandbox_ca(tmp_path):
+    first = _write_test_ca(tmp_path, "first")
+    second = _write_test_ca(tmp_path, "second")
+    database = _run_browser_ca_sync(tmp_path, first)
+    assert _nss_certificate_sha(database) == _certificate_sha(first)
+
+    # An unchanged boot is idempotent; rotation replaces the certificate under
+    # the single dedicated nickname with the runtime's current identity.
+    certificate_db = database / "cert9.db"
+    unchanged_mtime = certificate_db.stat().st_mtime_ns
+    _run_browser_ca_sync(tmp_path, first)
+    assert _nss_certificate_sha(database) == _certificate_sha(first)
+    assert certificate_db.stat().st_mtime_ns == unchanged_mtime
+
+    subprocess.run(
+        [
+            "certutil", "-M", "-d", f"sql:{database}",
+            "-n", "tau-sandbox microsandbox CA", "-t", ",,",
+        ],
+        check=True,
+    )
+    _run_browser_ca_sync(tmp_path, first)
+    listing = subprocess.run(
+        ["certutil", "-L", "-d", f"sql:{database}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "tau-sandbox microsandbox CA" in listing
+    assert "C,," in listing
+
+    # Rotation leaves only the new certificate under the final nickname.
+    _run_browser_ca_sync(tmp_path, second)
+    assert _nss_certificate_sha(database) == _certificate_sha(second)
+    staging = subprocess.run(
+        [
+            "certutil", "-L", "-d", f"sql:{database}",
+            "-n", "tau-sandbox microsandbox CA (staging)",
+        ],
+        capture_output=True,
+    )
+    assert staging.returncode != 0
+
+    second.unlink()
+    _run_browser_ca_sync(tmp_path, second)
+    removed = subprocess.run(
+        [
+            "certutil", "-L", "-d", f"sql:{database}",
+            "-n", "tau-sandbox microsandbox CA",
+        ],
+        capture_output=True,
+    )
+    assert removed.returncode != 0
+
+
+@pytest.mark.skipif(
+    not all(shutil.which(command) for command in ("certutil", "flock", "openssl")),
+    reason="NSS synchronization tools are unavailable",
+)
+def test_entrypoint_serializes_browser_ca_updates(tmp_path):
+    first = _write_test_ca(tmp_path, "concurrent-first")
+    second = _write_test_ca(tmp_path, "concurrent-second")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    database = home / ".pki" / "nssdb"
+    processes = []
+    for certificate in (first, second, first, second):
+        processes.append(
+            subprocess.Popen(
+                [
+                    "bash", str(CONFIG_DIR / "sync-browser-ca.sh"),
+                    str(certificate), str(database),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=30)
+        assert process.returncode == 0, f"stdout: {stdout}\nstderr: {stderr}"
+
+    listing = subprocess.run(
+        ["certutil", "-L", "-d", f"sql:{database}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert listing.count("tau-sandbox microsandbox CA ") == 1
+    assert _nss_certificate_sha(database) in {
+        _certificate_sha(first),
+        _certificate_sha(second),
+    }
+
+
+def test_entrypoint_runs_browser_ca_sync_helper_with_fixed_paths():
+    text = _read("entrypoint.sh")
+    assert "/usr/local/bin/sync-browser-ca" in text
+    assert "/usr/local/share/ca-certificates/microsandbox-ca.crt" in text
+    assert "/home/tau/.pki/nssdb" in text
+
+
+def test_browser_ca_sync_uses_trusted_path():
+    text = _read("sync-browser-ca.sh")
+    assert "PATH=/usr/local/bin:/usr/bin:/bin" in text
 
 
 def test_entrypoint_has_required_directives():

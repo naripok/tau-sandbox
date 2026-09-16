@@ -35,6 +35,11 @@ TAU_ENTRYPOINT_DIR="$TAU_ENTRYPOINT_HOME/.tau"
 
 mkdir -p "$TAU_ENTRYPOINT_HOME/.local/bin" "$TAU_ENTRYPOINT_HOME/.agents"
 
+# Chromium uses the user's NSS trust database rather than the system CA bundle.
+/usr/local/bin/sync-browser-ca \
+    /usr/local/share/ca-certificates/microsandbox-ca.crt \
+    /home/tau/.pki/nssdb
+
 # Recover a fresh home initialized by the previous nested-mount layout. In that
 # layout agentd could create ~/.tau as root before this uid-1000 process began.
 # Keep the inaccessible directory for inspection; reset eventually removes it.

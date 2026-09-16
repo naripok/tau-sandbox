@@ -72,7 +72,7 @@ Rebuilds prune superseded images of the current package content from the microsa
 
 The image includes a headless Chromium and a matching `browser` CLI. The CLI speaks the Chrome DevTools Protocol directly: it is a single zero-dependency script (`config/browser.mjs`, installed as `/usr/local/bin/browser`) with no npm or Python packages behind it.
 
-The first command starts Chromium as a detached daemon. Each invocation connects, runs, and disconnects. The DevTools endpoint stays bound to `127.0.0.1` inside the VM. Cookies persist across sandbox runs in `~/.local/state/browser/profile` (the per-project home volume), so logged-in sessions survive restarts. A profile lock left by a previous VM instance is cleared at launch.
+The first command starts Chromium as a detached daemon. Each invocation connects, runs, and disconnects. The DevTools endpoint stays bound to `127.0.0.1` inside the VM. Cookies persist across sandbox runs in `~/.local/state/browser/profile` (the per-project home volume), so logged-in sessions survive restarts. A profile lock left by a previous VM instance is cleared at launch. At startup, the sandbox synchronizes microsandbox's runtime TLS CA into the user's NSS database so Chromium retains certificate verification while using the runtime's network proxy.
 
 ```bash
 browser open https://example.com   # navigate, print title and URL

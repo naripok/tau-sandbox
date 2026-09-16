@@ -129,6 +129,31 @@ class TestSandboxBasics:
         assert result.returncode == 0, f"guest DNS failed: {result.stderr}"
         assert "github.com" in result.stdout
 
+    def test_browser_trusts_microsandbox_tls_ca(self, tmp_path, sandbox_home):
+        """The runtime CA remains installed once and Chromium trusts it after re-entry."""
+        if not _host_can_resolve("example.com"):
+            pytest.skip("host cannot resolve example.com; nothing to compare against")
+        first = run_sandbox(tmp_path, sandbox_home, ["true"])
+        assert first.returncode == 0, f"first boot failed: {first.stderr}"
+        result = run_sandbox(
+            tmp_path,
+            sandbox_home,
+            [
+                "sh",
+                "-c",
+                "test \"$(certutil -L -d sql:$HOME/.pki/nssdb "
+                "| grep -c '^tau-sandbox microsandbox CA ')\" -eq 1 "
+                "&& test \"$(certutil -L -d sql:$HOME/.pki/nssdb "
+                "-n 'tau-sandbox microsandbox CA' -r | sha256sum)\" "
+                "= \"$(openssl x509 -in /usr/local/share/ca-certificates/"
+                "microsandbox-ca.crt -outform DER | sha256sum)\" "
+                "&& browser open https://example.com",
+            ],
+        )
+        assert result.returncode == 0, f"browser HTTPS failed: {result.stderr}"
+        assert "https://example.com/" in result.stdout
+        assert "ERR_CERT_AUTHORITY_INVALID" not in result.stderr
+
     def test_tau_is_installed(self, tmp_path, sandbox_home):
         """The declared agent is present inside the sandbox."""
         result = run_sandbox(tmp_path, sandbox_home, ["tau", "--version"])
