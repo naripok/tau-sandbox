@@ -37,6 +37,11 @@ OPENCODE_SANDBOX_ENTRYPOINT_DATA_DIR="$OPENCODE_SANDBOX_ENTRYPOINT_HOME/.local/s
 
 mkdir -p "$OPENCODE_SANDBOX_ENTRYPOINT_HOME/.local/bin" "$OPENCODE_SANDBOX_ENTRYPOINT_DATA_DIR" "$OPENCODE_SANDBOX_ENTRYPOINT_CONFIG_DIR"
 
+# Chromium uses the user's NSS trust database rather than the system CA bundle.
+/usr/local/bin/sync-browser-ca \
+    /usr/local/share/ca-certificates/microsandbox-ca.crt \
+    /home/opencode/.pki/nssdb
+
 # Microsandbox prepares nested mount targets as root before starting this
 # unprivileged entrypoint. Keep those mounts outside the persistent home and
 # link them into opencode's expected paths only after the home directories

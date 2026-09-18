@@ -37,7 +37,8 @@ Host variables reach the VM in two forms. Ordinary forwarded variables carry the
 ## Tools and dependencies
 
 - **Languages:** Python, pip, uv, Node.js, npm
-- **System:** bash, git, gcc, make, rsync, fd, ripgrep, ast-grep, openssh, curl, tar
+- **System:** bash, git, gcc, make, rsync, fd, ripgrep, ast-grep, openssh, curl, certutil, tar
+- **Browser:** `browser` drives the preinstalled headless Chromium over the Chrome DevTools Protocol (DevTools endpoint bound to 127.0.0.1, guest-local; cookies persist in `~/.local/state/browser/profile`). Common commands: `browser open <url>`, `browser outline` (numbered interactive elements), `browser click <n>`, `browser fill <n> <text>`, `browser text`, `browser screenshot [path] [--full]`, `browser eval <js>`, `browser tabs` / `newtab <url>` / `close`. Run `browser --help` for all commands.
 - **Agent:** `opencode`
 
 Bash is the default shell. User installs persist under `~/.local` (`pip --user`, `uv tool install`, `npm install -g`); `PATH` and the package-manager environment are configured accordingly. npm lifecycle scripts are disabled by default; opt in per command with `--ignore-scripts=false`.

@@ -68,6 +68,28 @@ Rebuilds prune superseded images of the current package content from the microsa
 
 **Override:** Set `OPENCODE_SANDBOX_IMAGE=my-image-ref` to bypass `.opencode-packages` and automatic image management. Use a specific image. Load it yourself, for example with `make build`.
 
+## Browser
+
+The image includes a headless Chromium and a matching `browser` CLI. The CLI speaks the Chrome DevTools Protocol directly: it is a single zero-dependency script (`config/browser.mjs`, installed as `/usr/local/bin/browser`) with no npm or Python packages behind it.
+
+The first command starts Chromium as a detached daemon. Each invocation connects, runs, and disconnects. The DevTools endpoint stays bound to `127.0.0.1` inside the VM. Cookies persist across sandbox runs in `~/.local/state/browser/profile` (the per-project home volume), so logged-in sessions survive restarts. A profile lock left by a previous VM instance is cleared at launch. At startup, the sandbox synchronizes microsandbox's runtime TLS CA into the user's NSS database so Chromium retains certificate verification while using the runtime's network proxy.
+
+```bash
+browser open https://example.com   # navigate, print title and URL
+browser outline                    # numbered visible interactive elements
+browser fill 0 "search terms"      # type into element 0
+browser click 1                    # click element 1 (real mouse events)
+browser press Enter
+browser text                       # page text content
+browser screenshot /workspace/page.png
+browser eval "document.title"      # run JS in the page
+browser close                      # stop the daemon
+```
+
+`browser --help` lists every command and flag. Click and fill targets come from the last `outline` run. Sites with bot detection — search engines especially — may challenge automated browsers; the tool reports whatever the page serves.
+
+The browser runs inside the VM like any other guest process: no inbound ports, and the same network policy as the agent. Chromium ships in the base image (`chromium`, `ttf-liberation`); a per-project image built through `.opencode-packages` inherits both.
+
 ## Protected Project Secrets
 
 API credentials can reach a sandbox without their real values ever entering the guest. When a launch directory belongs to a projects root, the launcher looks for a paired `secrets.env` / `secrets.yaml` in a hidden host-only directory. The launcher sources the values into the runtime's environment. The launcher hands the policy file to the microsandbox runtime unmodified via `msb run --secret-conf`. The guest receives only placeholders. The runtime substitutes real values only for the destinations and request locations that each secret's policy allows.

@@ -42,6 +42,9 @@ def test_containerfile_has_required_tool_packages():
         "gcc",
         "make",
         "curl",
+        "nss",
+        "chromium",
+        "ttf-liberation",
     ):
         assert pkg in text
 
@@ -73,6 +76,8 @@ def test_containerfile_has_launchers():
     text = _text()
     assert "COPY config/entrypoint.sh" in text
     assert "COPY config/opencode-wrapper.sh /usr/local/bin/opencode" in text
+    assert "COPY config/browser.mjs /usr/local/bin/browser" in text
+    assert "COPY config/sync-browser-ca.sh /usr/local/bin/sync-browser-ca" in text
     assert 'ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' in text
 
 
