@@ -42,7 +42,7 @@ case "$ENV_FILE" in
 esac
 CPUS="${TAU_CPUS:-4}"
 MEM="${TAU_MEM:-8G}"
-PIDS="${TAU_PIDS:-1024}"
+PIDS="${TAU_PIDS:-8192}"
 # TAU_LAN_HOSTS: comma-separated exact-IP egress exceptions to the public
 # network profile; empty (default) keeps every private address denied.
 LAN_HOSTS="${TAU_LAN_HOSTS:-}"

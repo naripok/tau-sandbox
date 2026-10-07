@@ -684,7 +684,7 @@ guarantee.
 
 ### Requirement: Configurable resources
 
-The sandbox SHALL default to four virtual CPUs, 8 GB memory, and 1024 processes. `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` SHALL override these defaults.
+The sandbox SHALL default to four virtual CPUs, 8 GB memory, and 8192 processes. `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` SHALL override these defaults.
 
 ### Requirement: Reset
 

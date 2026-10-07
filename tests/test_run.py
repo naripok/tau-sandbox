@@ -240,7 +240,7 @@ def test_run_script_generates_correct_msb_command():
     # Resources and limits
     assert "-c 4" in run_line
     assert "-m 8G" in run_line
-    assert "--rlimit nproc=1024" in run_line
+    assert "--rlimit nproc=8192" in run_line
     # Security posture
     assert "--security restricted" in run_line
     assert "--tmpfs /tmp" in run_line

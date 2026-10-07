@@ -229,7 +229,7 @@ All config is controlled via environment variables:
 | `TAU_PROJECTS_DIR` | `${HOME}/Projects` | Projects root for protected project-secret discovery. An explicitly empty value is invalid. A relative value resolves from the launch directory. |
 | `TAU_CPUS` | `4` | Virtual CPUs for the sandbox |
 | `TAU_MEM` | `8G` | Memory for the sandbox |
-| `TAU_PIDS` | `1024` | Process (nproc) limit inside the sandbox |
+| `TAU_PIDS` | `8192` | Process (nproc) limit inside the sandbox |
 | `TAU_LAN_HOSTS` | *(none)* | Comma-separated exact-IP LAN hosts allowed egress. When empty, all private addresses stay blocked. |
 
 ### Project-local config
