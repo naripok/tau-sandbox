@@ -125,8 +125,11 @@ fi
 # --- TAU_IMAGE overrides ---
 
 section "TAU_IMAGE overrides (user-managed images bypass rebuilds)"
+# The launcher clone itself documents TAU_IMAGE everywhere; only real
+# overrides in user projects and shellrcs matter.
 TAU_IMAGE_HITS="$(grep -rIn --exclude-dir=.git 'TAU_IMAGE' \
-    "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/Projects" 2>/dev/null || true)"
+    "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/Projects" 2>/dev/null \
+    | grep -v "^$SCRIPT_DIR/" || true)"
 if [ -n "$TAU_IMAGE_HITS" ]; then
     printf '\n```\n%s\n```\n' "$TAU_IMAGE_HITS" >> "$REPORT"
     record WARN "TAU_IMAGE found; those images are user-managed and must be rebuilt manually (make build)"
@@ -187,7 +190,9 @@ if have msb && kvm_available; then
     if [ "$TRY_RC" -ne 0 ]; then
         record WARN "sandbox boot probe failed; see output above"
     else
-        probe="$TRY_OUT"
+        # msb streams guest console output with CRLF endings; strip the CR
+        # so parsed probe values compare cleanly.
+        probe="${TRY_OUT//$'\r'/}"
         node_version="$(sed -n 's/^NODE: \(.*\)$/\1/p' <<< "$probe" | head -1)"
         certifi_version="$(sed -n 's/^CERTIFI: \(.*\)$/\1/p' <<< "$probe" | head -1)"
         ca_dir_line="$(sed -n 's/^CA_DIR: \(.*\)$/\1/p' <<< "$probe" | head -1)"
@@ -220,7 +225,14 @@ fi
 
 section "Unit test suite (integration tests excluded: they build a test image)"
 if have uv; then
-    try_out "pytest" env -u TAU_LAN_HOSTS uv run --directory "$SCRIPT_DIR" pytest -q --ignore="$SCRIPT_DIR/tests/test_integration.py"
+    # A project venv created inside the sandbox does not work on the host
+    # (guest interpreter paths), and an ambient VIRTUAL_ENV or TAU_LAN_HOSTS
+    # would skew the run. Use a throwaway environment instead.
+    PYTEST_HOME="$(mktemp -d)"
+    try_out "pytest" env -u VIRTUAL_ENV -u TAU_LAN_HOSTS \
+        UV_PROJECT_ENVIRONMENT="$PYTEST_HOME/venv" \
+        uv run --directory "$SCRIPT_DIR" pytest -q --ignore="$SCRIPT_DIR/tests/test_integration.py"
+    rm -rf -- "$PYTEST_HOME"
     if [ "$TRY_RC" -eq 0 ]; then
         record OK "unit test suite passed"
     else
