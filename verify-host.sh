@@ -93,11 +93,11 @@ fi
 section "Launcher repo ($SCRIPT_DIR)"
 if git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     try_out "git log" git -C "$SCRIPT_DIR" log --oneline -3
-    git_log="$(git -C "$SCRIPT_DIR" log --oneline -5)"
+    git_log="$(git -C "$SCRIPT_DIR" log --oneline)"
     if grep -q "pin patched certifi floor" <<< "$git_log"; then
         record OK "repo contains the certifi-floor commit"
     else
-        record FAIL "repo is missing commit a5321b9 (pin patched certifi floor); pull or update the clone"
+        record FAIL "repo is missing the certifi-floor commit (a5321b9); pull or update the clone"
     fi
     try_out "git status" git -C "$SCRIPT_DIR" status --short
 else
