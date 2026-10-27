@@ -60,7 +60,15 @@ def test_containerfile_pins_tau_ref():
 
 def test_containerfile_pins_tau_ref_with_refresh_lock():
     # The pinned commit carries the cross-process OAuth refresh lock.
-    assert "ARG TAU_REF=9bcad9da418622985fb4f0a644e29fa5471a133d" in _text()
+    assert "ARG TAU_REF=42db6f7e178f70fe4496a42b03620d975ad8ed57" in _text()
+
+
+def test_containerfile_pins_patched_certifi_floor():
+    # tau's outbound HTTPS trusts certifi's bundled CA bundle. The eMudhra
+    # intermediate-CA compromise (October 2026) requires certifi 2026.10.19
+    # or later, pinned explicitly so tau's own dependency metadata cannot
+    # resolve an older release.
+    assert "certifi>=2026.10.19" in _text()
 
 
 def test_containerfile_has_launchers():

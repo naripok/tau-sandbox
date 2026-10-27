@@ -68,6 +68,18 @@ Rebuilds prune superseded images of the current package content from the microsa
 
 **Override:** Set `TAU_IMAGE=my-image-ref` to bypass `.tau-packages` and automatic image management. Use a specific image. Load it yourself, for example with `make build`.
 
+## Updating
+
+The image is the upgrade vehicle. System packages install at image build time, and the pinned Tau build compiles into the same image. After pulling sandbox changes that touch the `Containerfile` or `config/`, rebuild and load the shared base image:
+
+```bash
+make build   # podman build --no-cache + msb load
+```
+
+A rebuild also refreshes every component that supplies TLS trust anchors: the system `ca-certificates` bundle, `nss` (used by Chromium), Node.js, and the trust roots compiled into the image's `uv` binary. The image pins tau's `certifi` dependency to a patched floor (currently `>=2026.10.19`, which rejects the compromised eMudhra intermediate CA certificates disclosed in October 2026), so tau's bundled CA bundle is patched on every fresh build.
+
+The launcher rebuilds the image only when the image reference is missing from the microsandbox cache. An existing image stays until you rebuild it. Projects with `.tau-packages` are the exception: their image names embed a hash of the base inputs, so an updated base triggers the approval-gated rebuild on the next run.
+
 ## Browser
 
 The image includes a headless Chromium and a matching `browser` CLI. The CLI speaks the Chrome DevTools Protocol directly: it is a single zero-dependency script (`config/browser.mjs`, installed as `/usr/local/bin/browser`) with no npm or Python packages behind it.

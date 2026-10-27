@@ -28,8 +28,15 @@ RUN pacman -Syu --noconfirm && \
 # Installed into a dedicated venv: Arch's python-pip is PEP 668
 # externally-managed, so system-wide pip installs are rejected.
 ARG TAU_REF=42db6f7e178f70fe4496a42b03620d975ad8ed57
+# Certifi floor: tau's outbound HTTPS verifies against certifi's bundled CA
+# bundle, not the system store. The eMudhra intermediate-CA compromise
+# (October 2026) is only rejected from certifi 2026.10.19 on; the floor keeps
+# that guarantee explicit even if tau's own dependency metadata allows an
+# older release. A rebuild after a future CA trust change resolves whatever
+# version that floor requires.
 RUN python -m venv /opt/tau && \
-    /opt/tau/bin/pip install --no-cache-dir "git+https://github.com/naripok/tau@${TAU_REF}"
+    /opt/tau/bin/pip install --no-cache-dir \
+      "git+https://github.com/naripok/tau@${TAU_REF}" "certifi>=2026.10.19"
 
 # Sandbox user. The microVM is booted with --user 1000:1000 and mounts are
 # identity-virtualized by microsandbox: writes land on the host as the host
