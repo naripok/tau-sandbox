@@ -118,6 +118,20 @@ if have msb; then
     else
         record FAIL "shared base image localhost/tau-agent-isolated:latest missing; run: make build"
     fi
+    # Package images embed a hash of the base inputs (Containerfile + config/).
+    # Any image whose base hash differs from the current inputs predates the
+    # current base and rebuilds (approval-gated) on that project's next run.
+    CURRENT_BASE_HASH="$({ sha256sum "$SCRIPT_DIR/Containerfile" 2>/dev/null || true; \
+        find "$SCRIPT_DIR/config" -maxdepth 1 -type f -print0 2>/dev/null \
+            | LC_ALL=C sort -z | xargs -0 -r sha256sum; } \
+        | awk '{ printf "%s", $1 }' | sha256sum | cut -c1-8)"
+    stale_projects="$(sed -nE 's|^localhost/tau-agent-isolated-.*-([0-9a-f]{8})-[0-9a-f]{8}:latest$|\1|p' <<< "$msb_images" \
+        | grep -v "^$CURRENT_BASE_HASH$" | sort -u | wc -l)"
+    if [ "$stale_projects" -eq 0 ]; then
+        record OK "all cached package images are built on the current base ($CURRENT_BASE_HASH)"
+    else
+        record INFO "base hash is now $CURRENT_BASE_HASH; $stale_projects package-image base generation(s) predate it and rebuild on those projects' next interactive run"
+    fi
 else
     record WARN "msb not found; cannot inspect the image cache"
 fi
