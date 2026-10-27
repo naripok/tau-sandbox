@@ -74,9 +74,12 @@ def test_containerfile_pins_patched_certifi_floor():
 def test_containerfile_redirects_pip_to_system_ca_bundle():
     # pip verifies index traffic against its vendored CA bundle, which
     # lagged the patched releases and still trusted the compromised eMudhra
-    # intermediates disclosed in October 2026. The image points pip at the
-    # patched system bundle for build-time and guest installs.
-    assert "ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt" in _text()
+    # intermediates disclosed in October 2026. The image configures pip
+    # globally to verify against the patched system bundle for build-time
+    # and guest installs; global config applies regardless of environment.
+    assert 'cert = /etc/ssl/certs/ca-certificates.crt' in _text()
+    assert "/etc/pip.conf" in _text()
+    assert "ENV PIP_CERT" not in _text()
 
 
 def test_containerfile_has_launchers():

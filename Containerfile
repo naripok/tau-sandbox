@@ -30,9 +30,10 @@ RUN pacman -Syu --noconfirm && \
 ARG TAU_REF=42db6f7e178f70fe4496a42b03620d975ad8ed57
 # pip verifies PyPI downloads against its vendored CA bundle, which lags the
 # patched releases (it still trusted the compromised eMudhra intermediates
-# disclosed in October 2026). Point pip at the patched system bundle instead;
-# an explicit --cert still wins over this default.
-ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+# disclosed in October 2026). Point pip at the patched system bundle via
+# global pip configuration, which every pip invocation reads regardless of
+# its environment; an explicit --cert still wins over this default.
+RUN printf '[global]\ncert = /etc/ssl/certs/ca-certificates.crt\n' > /etc/pip.conf
 # Certifi floor: tau's outbound HTTPS verifies against certifi's bundled CA
 # bundle, not the system store. The eMudhra intermediate-CA compromise
 # (October 2026) is only rejected from certifi 2026.10.19 on; the floor keeps
