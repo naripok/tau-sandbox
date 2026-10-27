@@ -76,7 +76,7 @@ The image is the upgrade vehicle. System packages install at image build time, a
 make build   # podman build --no-cache + msb load
 ```
 
-A rebuild also refreshes every component that supplies TLS trust anchors: the system `ca-certificates` bundle, `nss` (used by Chromium), Node.js, and the trust roots compiled into the image's `uv` binary. The image pins tau's `certifi` dependency to a patched floor (currently `>=2026.10.19`, which rejects the compromised eMudhra intermediate CA certificates disclosed in October 2026), so tau's bundled CA bundle is patched on every fresh build.
+A rebuild also refreshes every component that supplies TLS trust anchors: the system `ca-certificates` bundle, `nss` (used by Chromium), Node.js, and the trust roots compiled into the image's `uv` binary. The image pins tau's `certifi` dependency to a patched floor (currently `>=2026.10.19`, which rejects the compromised eMudhra intermediate CA certificates disclosed in October 2026), so tau's bundled CA bundle is patched on every fresh build. The image also points pip at the system CA bundle (`PIP_CERT`), because pip's vendored bundle lags trust-store updates and still trusted the compromised intermediates at the time of that disclosure.
 
 The launcher rebuilds the image only when the image reference is missing from the microsandbox cache. An existing image stays until you rebuild it. Projects with `.tau-packages` are the exception: their image names embed a hash of the base inputs, so an updated base triggers the approval-gated rebuild on the next run.
 
@@ -282,6 +282,7 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 | Variable | Description |
 | --- | --- |
 | `TAU_NO_UPDATE_CHECK` | Skips Tau's online version check (the image is the update vehicle) |
+| `PIP_CERT` | Points pip at the patched system CA bundle instead of pip's vendored bundle, which lags trust-store updates |
 
 ### Sandbox Filesystem
 
