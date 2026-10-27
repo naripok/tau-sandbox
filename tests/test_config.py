@@ -27,8 +27,6 @@ import re
 import shlex
 import subprocess
 import sys
-import threading
-import time
 
 import pytest
 import tree_sitter_bash
@@ -972,7 +970,7 @@ def test_entrypoint_sets_persistent_env():
 # --- tau-wrapper.py ---
 
 
-_STOCK_TAU_SITE_PACKAGES = pathlib.Path("/opt/tau/lib/python3.14/site-packages")
+_STOCK_TAU_PYTHON = pathlib.Path("/opt/tau/bin/python")
 
 
 def test_tau_wrapper_injects_immutable_prompt():
@@ -1037,57 +1035,81 @@ def test_tau_wrapper_prepends_prompt_flag_before_app(tmp_path):
     ]
 
 
-def _stock_file_credential_store(monkeypatch) -> type:
-    """FileCredentialStore from the installed tau_coding package, whose
-    stock atomic writer now owns the project-local credential file."""
-    monkeypatch.syspath_prepend(str(_STOCK_TAU_SITE_PACKAGES))
-    from tau_coding.credentials import FileCredentialStore
+_STOCK_TAU_PYTHON = pathlib.Path("/opt/tau/bin/python")
 
-    return FileCredentialStore
+# The whole-file characterization runs inside the stock tau venv's own
+# interpreter: the image's Python version and dependency ABI are not
+# guaranteed to match this suite's interpreter, so cross-interpreter
+# site-packages injection is not safe.
+_STOCK_WRITER_HARNESS = """
+import json
+import pathlib
+import sys
+import threading
+import time
+
+from tau_coding.credentials import FileCredentialStore
+
+path = pathlib.Path(sys.argv[1])
+store = FileCredentialStore(path)
+store.set(\"seed\", \"x\")  # the target file exists for the whole run
+stop = threading.Event()
+violations = []
+observations = []
 
 
-def test_stock_credential_writer_keeps_whole_file_guarantee(tmp_path, monkeypatch):
+def read_until_stopped():
+    while not stop.is_set():
+        try:
+            raw = path_read()
+        except (OSError, UnicodeError, ValueError) as exc:
+            violations.append(exc)
+            return
+        observations.append(raw)
+        time.sleep(0)
+
+
+def path_read():
+    raw = open(path, encoding=\"utf-8\").read()
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f\"credential file was not an object: {raw[:80]!r}\")
+    return data
+
+
+reader = threading.Thread(target=read_until_stopped)
+reader.start()
+try:
+    for index in range(300):
+        store.set(f\"key-{index}\", \"x\" * 2000)
+finally:
+    stop.set()
+    reader.join(timeout=10)
+assert not reader.is_alive(), \"reader stalled\"
+assert violations == [], violations
+assert observations, \"the reader never overlapped the writes\"
+print(\"OK\")
+"""
+
+
+def test_stock_credential_writer_keeps_whole_file_guarantee(tmp_path):
     """Guard the whole-file guarantee the wrapper change now rests on: the
     stock FileCredentialStore._save writes a temp file beside the target
     and atomically renames it into place, so a concurrent reader observes a
     complete old or complete new credential object, never a partial file.
     This characterization test passes before and after the wrapper change;
     it guards against a regression to an in-place writer."""
-    credential_store = _stock_file_credential_store(monkeypatch)
-    path = tmp_path / "credentials.json"
-    store = credential_store(path)
-    store.set("seed", "x")  # the target file exists for the whole run
-    stop = threading.Event()
-    violations: list[BaseException] = []
-    observations: list[dict] = []
-
-    def read_until_stopped() -> None:
-        while not stop.is_set():
-            try:
-                raw = path.read_text(encoding="utf-8")
-                data = json.loads(raw)
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                violations.append(exc)
-                return
-            if not isinstance(data, dict):
-                violations.append(
-                    ValueError(f"credential file was not an object: {raw[:80]!r}")
-                )
-                return
-            observations.append(data)
-            time.sleep(0)
-
-    reader = threading.Thread(target=read_until_stopped)
-    reader.start()
-    try:
-        for index in range(300):
-            store.set(f"key-{index}", "x" * 2000)
-    finally:
-        stop.set()
-        reader.join(timeout=10)
-    assert not reader.is_alive()
-    assert violations == []
-    assert observations  # the reader actually overlapped the writes
+    if not _STOCK_TAU_PYTHON.exists():
+        pytest.skip("stock tau venv not installed")
+    harness = tmp_path / "harness.py"
+    harness.write_text(_STOCK_WRITER_HARNESS)
+    result = subprocess.run(
+        [str(_STOCK_TAU_PYTHON), str(harness), str(tmp_path / "credentials.json")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
 
 # --- documentation contracts: project secrets ---

@@ -86,6 +86,8 @@ The image includes a headless Chromium and a matching `browser` CLI. The CLI spe
 
 The first command starts Chromium as a detached daemon. Each invocation connects, runs, and disconnects. The DevTools endpoint stays bound to `127.0.0.1` inside the VM. Cookies persist across sandbox runs in `~/.local/state/browser/profile` (the per-project home volume), so logged-in sessions survive restarts. A profile lock left by a previous VM instance is cleared at launch. At startup, the sandbox synchronizes microsandbox's runtime TLS CA into the user's NSS database so Chromium retains certificate verification while using the runtime's network proxy.
 
+Chromium verifies server certificates with its built-in verifier and blocks revoked or compromised CA certificates through the CRLSet component, which the browser refreshes online shortly after start. A page loaded in the seconds before the first CRLSet refresh of a browser session is verified against the CRLSet from the previous session. Verifications outside the browser use the system CA bundle or, for tau, the pinned `certifi` floor, so a stale CRLSet does not affect them.
+
 ```bash
 browser open https://example.com   # navigate, print title and URL
 browser outline                    # numbered visible interactive elements
