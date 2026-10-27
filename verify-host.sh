@@ -9,7 +9,8 @@ set -euo pipefail
 #
 # Writes a report to a file (first argument; default: a timestamped
 # host-state-report-*.txt next to this script, which is inside the repo, so
-# the sandbox can read it later at /workspace). stdout carries only the
+# the sandbox can read it later at /workspace; an explicit path is
+# overwritten). stdout carries only the
 # report path and the verdict summary; errors go to stderr. The report never
 # contains credential or secret values.
 #
@@ -19,6 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPORT="${1:-$SCRIPT_DIR/host-state-report-$(date +%Y%m%d-%H%M%S).txt}"
+: > "$REPORT"
 COMPROMISED_URLS=(
     "https://dv-g3b-emudhra.we-have-a-problem.com/"
     "https://dv-g3b-aaa-emudhra.we-have-a-problem.com/"
