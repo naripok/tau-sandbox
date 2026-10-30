@@ -1,0 +1,51 @@
+# The microVM is the outer sandbox. These are defaults, not managed policy:
+# user/project config, profiles, and explicit CLI options take precedence.
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+cli_auth_credentials_store = "file"
+check_for_update_on_startup = false
+web_search = "disabled"
+
+# Controls both synchronous and model-advertised async user-input tools.
+[tools.experimental_request_user_input]
+enabled = false
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+trace_exporter = "none"
+metrics_exporter = "none"
+
+# Excludes System-scope skills, not the user's ~/.agents/skills discovery root.
+[skills.bundled]
+enabled = false
+
+# Keep native shell/file editing and task-agent equivalents. Other internal
+# runtime/protocol defaults are untouched; this is not a tool allowlist.
+[features]
+shell_tool = true
+unified_exec = true
+multi_agent = true
+apps = false
+plugins = false
+remote_plugin = false
+plugin_discovery_prefetch = false
+plugin_sharing = false
+browser_use = false
+browser_use_external = false
+computer_use = false
+image_generation = false
+view_image = false
+skill_search = false
+skill_mcp_dependency_install = false
+tool_suggest = false
+sleep_tool = false
+goals = false
+hooks = false
+workspace_dependencies = false
+memories = false

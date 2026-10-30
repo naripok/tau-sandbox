@@ -1,6 +1,6 @@
 # Tau Agent Isolation Environment
 
-Per-project isolation for the [Tau coding agent](https://github.com/huggingface/tau) using [microsandbox](https://github.com/superradcompany/microsandbox) microVMs.
+Per-project isolation for the [Tau coding agent](https://github.com/huggingface/tau) and the official [Codex CLI](https://github.com/openai/codex) using [microsandbox](https://github.com/superradcompany/microsandbox) microVMs.
 
 Each project runs in its own hardware-isolated microVM. The microVM has persistent home, session, and log volumes. Installed tools, sandbox-only Tau config, and shell customizations survive across runs. Tau sessions and diagnostics stay isolated per project.
 
@@ -31,6 +31,8 @@ Add the printed alias to your `~/.bashrc` or `~/.zshrc`. Then use it from any pr
 cd ~/Projects/my-project
 tau-sandbox tau -p "Review this codebase"   # run tau in one-shot mode
 tau-sandbox tau                             # start the Tau TUI
+tau-sandbox codex login --device-auth        # independent Codex login
+tau-sandbox codex                           # start Codex in the same project VM environment
 tau-sandbox bash                            # interactive shell
 tau-sandbox npm test                        # any command inside
 tau-sandbox --reset                         # wipe per-project persistent state
@@ -79,6 +81,48 @@ make build   # podman build --no-cache + msb load
 A rebuild also refreshes every component that supplies TLS trust anchors: the system `ca-certificates` bundle, `nss` (used by Chromium), Node.js, and the trust roots compiled into the image's `uv` binary. The image pins tau's `certifi` dependency to a patched floor (currently `>=2026.10.19`, which rejects the compromised eMudhra intermediate CA certificates disclosed in October 2026), so tau's bundled CA bundle is patched on every fresh build. The image also configures pip globally (`/etc/pip.conf`) to verify against the system CA bundle, because pip's vendored bundle lags trust-store updates and still trusted the compromised intermediates at the time of that disclosure.
 
 The launcher rebuilds the image only when the image reference is missing from the microsandbox cache. An existing image stays until you rebuild it. Projects with `.tau-packages` are the exception: their image names embed a hash of the base inputs, so an updated base triggers the approval-gated rebuild on the next run.
+
+## Codex
+
+The image installs official `@openai/codex@0.166.0` under `/opt/codex`, including its architecture-specific optional native package and resources. The thin `codex` launcher forwards all arguments unchanged; `run.sh` remains command-agnostic.
+
+```bash
+tau-sandbox codex login --device-auth
+tau-sandbox codex
+tau-sandbox codex exec "Review this codebase"
+tau-sandbox codex --sandbox read-only --ask-for-approval on-request
+```
+
+Device authentication prints a URL and code to use in your host browser, avoiding an inbound guest callback. This documents the supported upstream login flow, not a completed authentication smoke test. Codex authentication and API requests through protected-secret substitution, including TLS trust and Responses WebSocket compatibility with the runtime proxy, have not yet been smoke-tested. Enable device-code login in your ChatGPT account security settings if required. Codex stores its own `~/.codex/auth.json` in the persistent project home (file credential storage by default), independently of Tau's `~/.tau/credentials.json`. `tau-login-openai` logs **Tau** in, not Codex. No host `~/.codex` config or credentials are copied. Reset deletes both agents' local state.
+
+Tau and Codex are mutually trusted and run as the same UID in one project home. **Either can read or modify the other's credentials, sessions, and config.** Separate authentication formats do not isolate these agents from one another. The isolation boundary is between projects and the host, not between agents in a project.
+
+`/etc/codex/config.toml` supplies low-precedence defaults: `sandbox_mode = "danger-full-access"`, `approval_policy = "never"`, `cli_auth_credentials_store = "file"`, and `check_for_update_on_startup = false`. The microVM supplies the outer sandbox; these defaults avoid requiring nested Linux sandbox support. Codex user/project config, profiles, and explicit CLI choices override them normally. Selecting only a sandbox mode leaves the approval default unchanged; set both when desired. An explicitly selected inner sandbox may fail if the VM lacks its required kernel facilities. The wrapper never injects a bypass flag or overrides your choices. These defaults do not relax VM mounts, guest UID, or network policy.
+
+The default capability set is native shell/file work, multi-agent tasks, and your own skills:
+
+- `shell_tool`, `unified_exec`, and `multi_agent` stay enabled. Codex is not Tau's four-tool API: it uses shell execution/read primitives and `apply_patch` for file work, plus task-agent equivalents such as `spawn_agent`, `send_input`, `wait`, and `close_agent`. Exact tool exposure depends on the selected model and Codex runtime. In particular, model-advertised `clock` (and experimental `send_message_to_user_async`/`test_sync_tool`, if advertised) can register independently of feature switches; this release has no separate supported disable setting for those model-only paths. The plan tool already defaults off. MCP resource tools require configured servers or an opted-in code-mode-only runtime.
+- Web search is `disabled`. Apps/connectors, plugins (including remote discovery/sharing), browser/computer use, image generation/viewing, remote skill search, automatic skill MCP dependency installation, tool suggestions, structured user-input tools (`tools.experimental_request_user_input.enabled = false`), sleep, goals, hooks, workspace dependencies, and memories default off. Analytics, feedback uploads, and OTEL log/trace/metrics exporters default off. The removed `personality` flag is not configured; desktop-only UI flags and unrelated runtime/protocol flags retain upstream defaults.
+- `skills.bundled.enabled = false` excludes **System-scope** skills, including the embedded skills installed under `~/.codex/skills/.system`. Your host `~/.agents/skills` is already mounted read-only at `/home/tau/.agents/skills`, a native Codex user-skill discovery path. Project `.agents/skills` and project-home `~/.codex/skills` also remain available; Tau-only `~/.tau/skills` is not a Codex discovery root. Existing cached bundled skills are excluded rather than deleted.
+
+These are ordinary low-precedence defaults, **not** administrator feature restrictions or a strict tool allowlist. Shell commands can still access the network and installed utilities (including `browser`); the outer VM network/mount policy is unchanged. Upstream internal/runtime features remain enabled where needed. No MCP servers are preconfigured; projects may configure their own. To opt in, add only the desired settings to a **trusted** project's `.codex/config.toml`, for example:
+
+```toml
+web_search = "live"
+
+[features]
+apps = true
+plugins = true
+
+[skills.bundled]
+enabled = true
+```
+
+Other opt-ins use the corresponding keys in `config/codex-config.toml`. No managed requirements prevent them. Rebuild the image to apply changed system defaults.
+
+Sandbox context is installed as managed **additive** `additional_developer_instructions` in `/etc/codex/requirements.toml`. It stays separate from built-in model instructions and user developer instructions; normal `AGENTS.md` discovery is preserved and no project instructions file is written. Unlike Tau's runtime-mounted reference, Codex's copy is generated at image build time: rebuild after context changes.
+
+Version updates: change `CODEX_VERSION` in `Containerfile`, verify the official npm package layout and the matching release's configuration/instruction semantics, update tests, then run `make build`. Startup update checks are disabled by default; use image rebuilds rather than `codex update`. Verified against [rust-v0.166.0](https://github.com/openai/codex/releases/tag/rust-v0.166.0): [config layering](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/README.md), [requirements schema](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/config_requirements.rs), [separate managed developer context](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/core/src/context/world_state/managed_developer_instructions.rs), [feature registry](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/features/src/lib.rs), [bundled skill config](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/skills_config.rs), and [system-skill filtering](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/ext/skills/src/host_service.rs).
 
 ## Browser
 
@@ -214,7 +258,9 @@ podman image → msb run → boot microVM → entrypoint → tau wrapper → Tau
 | --- | --- |
 | `Containerfile` | Arch Linux image with Python, uv, Node.js, tau, and the entrypoint |
 | `config/entrypoint.sh` | Synchronizes host config and initializes the persistent sandbox home |
-| `config/tau-wrapper.py` | Injects the invariant sandbox context |
+| `config/tau-wrapper.py` | Injects the invariant sandbox context for Tau |
+| `config/codex-wrapper.py` | Forwards arguments to the image-pinned official Codex package |
+| `config/codex-config.toml` | Overridable Codex system defaults; context is generated separately as managed requirements |
 | `config/.bashrc` | Shell prompt, aliases, and persistent PATH config |
 | `config/APPEND_SYSTEM.md` | Immutable agent environment reference |
 | `run.sh` | Launch script — makes sure the image is present, mounts project and state, boots the VM |
@@ -291,6 +337,7 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 | `/home/tau/.tau/*` | Per-project home volume | Read-write |
 | `/etc/tau-sandbox/bootstrap/tau/*` | Existing host `~/.tau` entries | Read-only |
 | `/home/tau/.tau/credentials.json` | Per-project home volume | Read-write |
+| `/home/tau/.codex/` | Independent Codex config, auth, and sessions in project home volume | Read-write |
 | `/home/tau/.tau/sessions/` | Link to per-project volume | Read-write |
 | `/home/tau/.tau/logs/` | Link to per-project volume | Read-write |
 | `/var/lib/tau-sandbox/sessions/` | Sessions volume backing path | Read-write |
@@ -370,6 +417,14 @@ The test suite covers:
 - **Integration tests** — image build/load, filesystem layout, host-config synchronization, atomic provider writes, project-local credential writes, isolated sessions/logs, persistence, and volume isolation.
 - **Security tests** — security flags, mount allowlist, dangerous-character rejection.
 - **Project-secret tests** — exact-directory mapping, paired-source sanity checks and reserved names, placeholder injection, and forwarding precedence.
+
+An optional account-free test exercises the actual pinned CLI's app-server JSON-RPC `config/read`, `configRequirements/read`, and `skills/list`, plus evaluated `features list`. It checks system defaults, user/CLI precedence, trusted project opt-in, own-skill discovery under `HOME/.agents/skills`, bundled-skill exclusion/re-enablement, structured user-input defaults/project opt-in, and separately loaded managed instructions. The user-input setting is checked through raw config layers and effective origins because the pinned RPC's `ToolsV2` projection exposes only web-search settings. Download official `@openai/codex@0.166.0` outside the repository, then run:
+
+```bash
+CODEX_TEST_CLI=/absolute/path/to/codex uv run pytest tests/test_codex.py
+```
+
+The local probe requires Linux `bwrap` with usable user namespaces to bind temporary `/etc/codex` files without changing the host. It uses a fresh isolated `CODEX_HOME`, creates no account or model request, and skips unless explicitly enabled. The VM integration smoke runs the same RPC probe against the installed launcher automatically when VM prerequisites are available. These checks validate configuration loading, not authenticated API/TLS/WebSocket operation.
 
 Integration tests build the image once per session. They require `msb` and podman. The tests are skipped automatically when either tool is not available.
 

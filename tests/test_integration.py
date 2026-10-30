@@ -94,6 +94,35 @@ class TestSandboxBasics:
         assert result.returncode == 0, f"stderr: {result.stderr}"
         assert "e2e-ok" in result.stdout
 
+    def test_codex_installed_with_additive_context_and_defaults(self, tmp_path, sandbox_home):
+        result = run_sandbox(tmp_path, sandbox_home, ["codex", "--version"])
+        assert result.returncode == 0, result.stderr
+        assert "0.166.0" in result.stdout
+        # No account or model call: verify built config and immutable context.
+        (tmp_path / "codex_config_probe.py").write_text(
+            (REPO_ROOT / "tests/codex_config_probe.py").read_text()
+        )
+        probe = run_sandbox(tmp_path, sandbox_home, [
+            "python", "/workspace/codex_config_probe.py", "/usr/local/bin/codex",
+            "/tmp/codex-config-test-home", "/etc/tau-sandbox/APPEND_SYSTEM.md",
+        ])
+        assert probe.returncode == 0, probe.stdout + probe.stderr
+        result = run_sandbox(tmp_path, sandbox_home, ["python", "-c", '''
+import pathlib, tomllib
+config = tomllib.loads(pathlib.Path('/etc/codex/config.toml').read_text())
+assert config['sandbox_mode'] == 'danger-full-access'
+assert config['approval_policy'] == 'never'
+assert config['cli_auth_credentials_store'] == 'file'
+assert config['check_for_update_on_startup'] is False
+requirements = pathlib.Path('/etc/codex/requirements.toml')
+assert not __import__('os').access(requirements, __import__('os').W_OK)
+context = tomllib.loads(requirements.read_text())['additional_developer_instructions']
+assert '<sandbox_context>' in context
+assert 'UID 1000' in context
+assert not pathlib.Path('/home/tau/.codex/auth.json').exists()
+'''])
+        assert result.returncode == 0, result.stderr
+
     def test_sandbox_runs_as_unprivileged_user(self, tmp_path, sandbox_home):
         """The in-guest identity is uid 1000, never root."""
         result = run_sandbox(tmp_path, sandbox_home, ["id", "-u"])

@@ -44,6 +44,14 @@ RUN python -m venv /opt/tau && \
     /opt/tau/bin/pip install --no-cache-dir \
       "git+https://github.com/naripok/tau@${TAU_REF}" "certifi>=2026.10.19"
 
+# Official Codex CLI npm distribution, including its architecture-specific
+# optional native package. Keep the complete package layout (resources and rg).
+# No lifecycle scripts are needed; update only by rebuilding the image.
+ARG CODEX_VERSION=0.166.0
+RUN npm install --prefix /opt/codex --ignore-scripts --no-audit --no-fund \
+      "@openai/codex@${CODEX_VERSION}" && \
+    /usr/bin/node /opt/codex/node_modules/@openai/codex/bin/codex.js --version
+
 # Sandbox user. The microVM is booted with --user 1000:1000 and mounts are
 # identity-virtualized by microsandbox: writes land on the host as the host
 # user that owns the mounted directory.
@@ -58,6 +66,13 @@ RUN mkdir -p /etc/tau-sandbox/bootstrap/tau \
 COPY config/APPEND_SYSTEM.md /etc/tau-sandbox/APPEND_SYSTEM.md
 COPY config/.bashrc /etc/tau-sandbox/.bashrc
 
+# Codex system defaults are lower precedence than user/project/CLI config.
+# Managed additional instructions are additive to built-in and AGENTS content,
+# not a replacement model prompt. JSON strings are valid TOML basic strings.
+COPY config/codex-config.toml /etc/codex/config.toml
+RUN python -c 'import json; from pathlib import Path; Path("/etc/codex/requirements.toml").write_text("additional_developer_instructions = " + json.dumps(Path("/etc/tau-sandbox/APPEND_SYSTEM.md").read_text()) + "\n")'
+COPY config/codex-wrapper.py /usr/local/bin/codex
+
 # Tau wrapper: always injects the immutable sandbox reference.
 COPY config/tau-wrapper.py /usr/local/bin/tau
 
@@ -68,7 +83,7 @@ COPY config/sync-browser-ca.sh /usr/local/bin/sync-browser-ca
 # Entrypoint: initializes the persistent home, sets up the environment, and
 # then execs the user command.
 COPY config/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 755 /usr/local/bin/tau /usr/local/bin/entrypoint.sh /usr/local/bin/browser \
+RUN chmod 755 /usr/local/bin/tau /usr/local/bin/codex /usr/local/bin/entrypoint.sh /usr/local/bin/browser \
       /usr/local/bin/sync-browser-ca && \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 
