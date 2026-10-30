@@ -96,10 +96,10 @@ fi
 if [ "$1" = "run" ] && [ -n "${MSB_SNAPSHOT_CONTENTS:-}" ]; then
     for arg in "$@"; do
         case "$arg" in
-            *:/etc/tau-sandbox/bootstrap/tau/*:ro)
+            *:/etc/tau-sandbox/bootstrap/codex/*:ro|*:/etc/tau-sandbox/bootstrap/tau/*:ro)
                 # Record each snapshotted entry's name and contents so
                 # tests can prove which config directory supplied it.
-                source="${arg%%:/etc/tau-sandbox/bootstrap/tau/*:ro}"
+                source="${arg%%:/etc/tau-sandbox/bootstrap/*}"
                 name="${arg##*/}"
                 name="${name%:ro}"
                 printf '%s\\t%s\\n' "$name" "$(cat "$source" 2>/dev/null)" >> "$MSB_SNAPSHOT_CONTENTS"
@@ -1216,3 +1216,36 @@ def _bootstrap_stage_path(run_line):
     match = re.search(r"-v (/[^ ]*tau-sandbox-bootstrap\.[^/ ]*)/", run_line)
     assert match, run_line
     return pathlib.Path(match.group(1))
+
+
+def test_codex_config_discovery_override_and_fallback(tmp_path):
+    home = tmp_path / "home"
+    outer = tmp_path / "project"
+    inner = outer / "inner"
+    work = inner / "sub"
+    work.mkdir(parents=True)
+    home.mkdir()
+    override = tmp_path / "override"
+    for directory, value in ((home / ".codex", "home"),
+                             (outer / ".codex", "outer"),
+                             (inner / ".codex", "inner"), (override, "override")):
+        directory.mkdir()
+        (directory / "config.toml").write_text(value)
+        (directory / "auth.json").write_text("private")
+        (directory / "sessions").mkdir()
+    # Resolve a config symlink while still on the host.
+    (inner / ".codex").rename(inner / "config-world")
+    (inner / ".codex").symlink_to(inner / "config-world", target_is_directory=True)
+    for cwd, env, expected in ((work, {}, "inner"), (work, {"TAU_CODEX_CONFIG_DIR": str(override)}, "override"),
+                               (home, {}, "home")):
+        contents = tmp_path / "codex-snapshot"
+        contents.unlink(missing_ok=True)
+        env["MSB_SNAPSHOT_CONTENTS"] = str(contents)
+        result, log, _ = invoke_run("bash", cwd=cwd, home=home, env=env)
+        assert result.returncode == 0, result.stderr
+        run_line = next(line for line in log if line.startswith("msb run"))
+        assert ":/etc/tau-sandbox/bootstrap/codex/config.toml:ro" in run_line
+        assert "config.toml\t" + expected in contents.read_text()
+        assert "/codex/auth.json" not in run_line
+        assert "/codex/sessions" not in run_line
+        assert not _bootstrap_stage_path(run_line).exists()

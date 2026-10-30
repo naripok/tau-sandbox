@@ -162,6 +162,25 @@ rm -rf -- "$TAU_ENTRYPOINT_SYNC_MANIFEST"
 mv "$TAU_ENTRYPOINT_MANIFEST_TMP" "$TAU_ENTRYPOINT_SYNC_MANIFEST"
 rm -rf -- "$TAU_ENTRYPOINT_LEGACY_BOOTSTRAP_MARKER"
 
+# Refresh only supported Codex config resources; auth and runtime state stay
+# in the project home. A fixed resource list also safely handles host removals.
+TAU_ENTRYPOINT_CODEX_DIR="$TAU_ENTRYPOINT_HOME/.codex"
+TAU_ENTRYPOINT_CODEX_BOOTSTRAP=/etc/tau-sandbox/bootstrap/codex
+mkdir -p "$TAU_ENTRYPOINT_CODEX_DIR"
+for TAU_ENTRYPOINT_NAME in config.toml AGENTS.md AGENTS.override.md instructions.md skills rules prompts agents; do
+    TAU_ENTRYPOINT_SOURCE="$TAU_ENTRYPOINT_CODEX_BOOTSTRAP/$TAU_ENTRYPOINT_NAME"
+    TAU_ENTRYPOINT_DESTINATION="$TAU_ENTRYPOINT_CODEX_DIR/$TAU_ENTRYPOINT_NAME"
+    TAU_ENTRYPOINT_MARKER="$TAU_ENTRYPOINT_CODEX_DIR/.host-config-$TAU_ENTRYPOINT_NAME"
+    if [ -e "$TAU_ENTRYPOINT_SOURCE" ]; then
+        rm -rf -- "$TAU_ENTRYPOINT_DESTINATION"
+        cp -a "$TAU_ENTRYPOINT_SOURCE" "$TAU_ENTRYPOINT_DESTINATION"
+        chmod -R u+w "$TAU_ENTRYPOINT_DESTINATION"
+        touch "$TAU_ENTRYPOINT_MARKER"
+    elif [ -f "$TAU_ENTRYPOINT_MARKER" ]; then
+        rm -rf -- "$TAU_ENTRYPOINT_DESTINATION" "$TAU_ENTRYPOINT_MARKER"
+    fi
+done
+
 # First-run shell setup. The volume persists, so these run once per project.
 if [ ! -f "$TAU_ENTRYPOINT_HOME/.bashrc" ]; then
     cp /etc/tau-sandbox/.bashrc "$TAU_ENTRYPOINT_HOME/.bashrc"

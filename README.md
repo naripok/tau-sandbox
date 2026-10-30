@@ -93,7 +93,7 @@ tau-sandbox codex exec "Review this codebase"
 tau-sandbox codex --sandbox read-only --ask-for-approval on-request
 ```
 
-Device authentication prints a URL and code to use in your host browser, avoiding an inbound guest callback. This documents the supported upstream login flow, not a completed authentication smoke test. Codex authentication and API requests through protected-secret substitution, including TLS trust and Responses WebSocket compatibility with the runtime proxy, have not yet been smoke-tested. Enable device-code login in your ChatGPT account security settings if required. Codex stores its own `~/.codex/auth.json` in the persistent project home (file credential storage by default), independently of Tau's `~/.tau/credentials.json`. `tau-login-openai` logs **Tau** in, not Codex. No host `~/.codex` config or credentials are copied. Reset deletes both agents' local state.
+Device authentication prints a URL and code to use in your host browser, avoiding an inbound guest callback. This documents the supported upstream login flow, not a completed authentication smoke test. Codex authentication and API requests through protected-secret substitution, including TLS trust and Responses WebSocket compatibility with the runtime proxy, have not yet been smoke-tested. Enable device-code login in your ChatGPT account security settings if required. Codex stores its own `~/.codex/auth.json` in the persistent project home (file credential storage by default), independently of Tau's `~/.tau/credentials.json`. `tau-login-openai` logs **Tau** in, not Codex. Codex config is discovered from the nearest ancestor `.codex` directory, falling back to `~/.codex`; `TAU_CODEX_CONFIG_DIR` overrides discovery. Supported resources (`config.toml`, `AGENTS.md`, `AGENTS.override.md`, `instructions.md`, `skills`, `rules`, `prompts`, and `agents`) are snapshotted with symlinks dereferenced and refreshed into writable `~/.codex` on every start. Host-managed resources removed from the source are removed on restart; resources created only in the sandbox persist. Host Codex credentials, sessions, history, and other runtime state are never copied. Paths inside configuration must be valid inside the sandbox. Reset deletes both agents' local state.
 
 Tau and Codex are mutually trusted and run as the same UID in one project home. **Either can read or modify the other's credentials, sessions, and config.** Separate authentication formats do not isolate these agents from one another. The isolation boundary is between projects and the host, not between agents in a project.
 
@@ -283,6 +283,7 @@ All config is controlled via environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `TAU_IMAGE` | `tau-agent-isolated` | Full image reference used by msb. Bypasses `.tau-packages` and automatic build/load. |
+| `TAU_CODEX_CONFIG_DIR` | nearest ancestor `.codex`, else `~/.codex` | Host Codex configuration resources refreshed at each start; auth and runtime state stay project-local. |
 | `TAU_CONFIG_DIR` | nearest ancestor `.tau`, else `~/.tau` | Host Tau config refreshed at each start. When unset, the nearest ancestor directory with a `.tau` config dir is used. `credentials.json` stays project-local. |
 | `TAU_AGENTS_DIR` | `~/.agents` | Host `.agents` resources, mounted read-only at `/home/tau/.agents` |
 | `TAU_ENV_FILE` | `~/.env` | Env file whose variables are forwarded into the sandbox |
@@ -337,7 +338,7 @@ In addition to forwarded host variables, the entrypoint sets sandbox-specific de
 | `/home/tau/.tau/*` | Per-project home volume | Read-write |
 | `/etc/tau-sandbox/bootstrap/tau/*` | Existing host `~/.tau` entries | Read-only |
 | `/home/tau/.tau/credentials.json` | Per-project home volume | Read-write |
-| `/home/tau/.codex/` | Independent Codex config, auth, and sessions in project home volume | Read-write |
+| `/home/tau/.codex/` | Writable Codex config refreshed from host resources; project-local auth and sessions | Read-write |
 | `/home/tau/.tau/sessions/` | Link to per-project volume | Read-write |
 | `/home/tau/.tau/logs/` | Link to per-project volume | Read-write |
 | `/var/lib/tau-sandbox/sessions/` | Sessions volume backing path | Read-write |

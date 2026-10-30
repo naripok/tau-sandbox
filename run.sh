@@ -31,6 +31,21 @@ if [ -z "$CONFIG_DIR" ]; then
     done
 fi
 CONFIG_DIR="${CONFIG_DIR:-${HOME}/.tau}"
+# Codex configuration discovery is independent of Tau's config directory.
+CODEX_CONFIG_DIR="${TAU_CODEX_CONFIG_DIR:-}"
+if [ -z "$CODEX_CONFIG_DIR" ]; then
+    probe_dir="$(pwd)"
+    while :; do
+        if [ -d "$probe_dir/.codex" ]; then
+            CODEX_CONFIG_DIR="$probe_dir/.codex"
+            break
+        fi
+        parent="$(dirname "$probe_dir")"
+        [ "$parent" = "$probe_dir" ] && break
+        probe_dir="$parent"
+    done
+fi
+CODEX_CONFIG_DIR="${CODEX_CONFIG_DIR:-${HOME}/.codex}"
 AGENTS_DIR="${TAU_AGENTS_DIR:-${HOME}/.agents}"
 ENV_FILE="${TAU_ENV_FILE:-${HOME}/.env}"
 # Resolve a caller-supplied relative TAU_ENV_FILE against the launch
@@ -398,11 +413,29 @@ for entry in "${BOOTSTRAP_ENTRIES[@]}"; do
     # Dereference both top-level and nested links while still on the host,
     # where absolute host paths are meaningful. The VM receives only the
     # resulting snapshot, never broken links back into the host filesystem.
-    if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/$name"; then
+    mkdir -p "$BOOTSTRAP_STAGE/tau"
+    if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/tau/$name"; then
         echo "Error: failed to snapshot host Tau config entry: $entry" >&2
         exit 1
     fi
-    MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
+    MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/tau/$name:/etc/tau-sandbox/bootstrap/tau/$name:ro")
+done
+# Copy only Codex configuration resources, never credentials or runtime state.
+for name in config.toml AGENTS.md AGENTS.override.md instructions.md skills rules prompts agents; do
+    entry="$CODEX_CONFIG_DIR/$name"
+    resolved_entry="$(realpath -e "$entry" 2>/dev/null || true)"
+    if [ ! -f "$resolved_entry" ] && [ ! -d "$resolved_entry" ]; then
+        continue
+    fi
+    if [ -z "$BOOTSTRAP_STAGE" ]; then
+        BOOTSTRAP_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/tau-sandbox-bootstrap.XXXXXX")"
+    fi
+    mkdir -p "$BOOTSTRAP_STAGE/codex"
+    if ! cp -aL -- "$entry" "$BOOTSTRAP_STAGE/codex/$name"; then
+        echo "Error: failed to snapshot host Codex config entry: $entry" >&2
+        exit 1
+    fi
+    MOUNT_ARGS+=(-v "$BOOTSTRAP_STAGE/codex/$name:/etc/tau-sandbox/bootstrap/codex/$name:ro")
 done
 [ -d "$AGENTS_DIR" ] && MOUNT_ARGS+=(-v "$AGENTS_DIR:/home/tau/.agents:ro")
 MOUNT_ARGS+=(

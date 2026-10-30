@@ -131,3 +131,33 @@ def test_docs_cover_codex_auth_and_shared_user_boundary():
         for phrase in (".codex/", "device-auth", "danger-full-access", "additional_developer_instructions"):
             assert phrase in text
         assert "mutually trusted" in text
+
+
+def test_codex_startup_refresh_preserves_local_state(tmp_path):
+    text = (ROOT / "config/entrypoint.sh").read_text()
+    block = text[text.index('TAU_ENTRYPOINT_CODEX_DIR='):text.index('# First-run shell setup.')]
+    bootstrap = tmp_path / "bootstrap"
+    bootstrap.mkdir()
+    block = block.replace('/etc/tau-sandbox/bootstrap/codex', str(bootstrap))
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    codex.mkdir(parents=True)
+    (codex / "auth.json").write_text("local credential")
+    (codex / "prompts").mkdir()
+    (codex / "prompts/local.md").write_text("local prompt")
+    (bootstrap / "config.toml").write_text("host config")
+
+    def refresh():
+        subprocess.run(['bash', '-c', 'set -euo pipefail\nTAU_ENTRYPOINT_HOME="$1"\n' + block,
+                        'refresh', str(home)], check=True)
+
+    refresh()
+    assert (codex / "config.toml").read_text() == "host config"
+    (codex / "config.toml").write_text("session edit")
+    refresh()
+    assert (codex / "config.toml").read_text() == "host config"
+    (bootstrap / "config.toml").unlink()
+    refresh()
+    assert not (codex / "config.toml").exists()
+    assert (codex / "auth.json").read_text() == "local credential"
+    assert (codex / "prompts/local.md").read_text() == "local prompt"
