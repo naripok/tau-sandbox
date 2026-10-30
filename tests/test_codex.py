@@ -41,6 +41,20 @@ def test_system_defaults_are_overridable_not_cli_flags():
     assert config == {
         "sandbox_mode": "danger-full-access", "approval_policy": "never",
         "cli_auth_credentials_store": "file", "check_for_update_on_startup": False,
+        "web_search": "disabled",
+        "tools": {"experimental_request_user_input": {"enabled": False}},
+        "analytics": {"enabled": False}, "feedback": {"enabled": False},
+        "otel": {"exporter": "none", "trace_exporter": "none", "metrics_exporter": "none"},
+        "skills": {"bundled": {"enabled": False}},
+        "features": {
+            "shell_tool": True, "unified_exec": True, "multi_agent": True,
+            **dict.fromkeys((
+                "apps", "plugins", "remote_plugin", "plugin_discovery_prefetch", "plugin_sharing",
+                "browser_use", "browser_use_external", "computer_use", "image_generation", "view_image",
+                "skill_search", "skill_mcp_dependency_install", "tool_suggest", "sleep_tool",
+                "goals", "hooks", "workspace_dependencies", "memories",
+            ), False),
+        },
     }
 
 

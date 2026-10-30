@@ -99,9 +99,30 @@ Tau and Codex are mutually trusted and run as the same UID in one project home. 
 
 `/etc/codex/config.toml` supplies low-precedence defaults: `sandbox_mode = "danger-full-access"`, `approval_policy = "never"`, `cli_auth_credentials_store = "file"`, and `check_for_update_on_startup = false`. The microVM supplies the outer sandbox; these defaults avoid requiring nested Linux sandbox support. Codex user/project config, profiles, and explicit CLI choices override them normally. Selecting only a sandbox mode leaves the approval default unchanged; set both when desired. An explicitly selected inner sandbox may fail if the VM lacks its required kernel facilities. The wrapper never injects a bypass flag or overrides your choices. These defaults do not relax VM mounts, guest UID, or network policy.
 
+The default capability set is native shell/file work, multi-agent tasks, and your own skills:
+
+- `shell_tool`, `unified_exec`, and `multi_agent` stay enabled. Codex is not Tau's four-tool API: it uses shell execution/read primitives and `apply_patch` for file work, plus task-agent equivalents such as `spawn_agent`, `send_input`, `wait`, and `close_agent`. Exact tool exposure depends on the selected model and Codex runtime. In particular, model-advertised `clock` (and experimental `send_message_to_user_async`/`test_sync_tool`, if advertised) can register independently of feature switches; this release has no separate supported disable setting for those model-only paths. The plan tool already defaults off. MCP resource tools require configured servers or an opted-in code-mode-only runtime.
+- Web search is `disabled`. Apps/connectors, plugins (including remote discovery/sharing), browser/computer use, image generation/viewing, remote skill search, automatic skill MCP dependency installation, tool suggestions, structured user-input tools (`tools.experimental_request_user_input.enabled = false`), sleep, goals, hooks, workspace dependencies, and memories default off. Analytics, feedback uploads, and OTEL log/trace/metrics exporters default off. The removed `personality` flag is not configured; desktop-only UI flags and unrelated runtime/protocol flags retain upstream defaults.
+- `skills.bundled.enabled = false` excludes **System-scope** skills, including the embedded skills installed under `~/.codex/skills/.system`. Your host `~/.agents/skills` is already mounted read-only at `/home/tau/.agents/skills`, a native Codex user-skill discovery path. Project `.agents/skills` and project-home `~/.codex/skills` also remain available; Tau-only `~/.tau/skills` is not a Codex discovery root. Existing cached bundled skills are excluded rather than deleted.
+
+These are ordinary low-precedence defaults, **not** administrator feature restrictions or a strict tool allowlist. Shell commands can still access the network and installed utilities (including `browser`); the outer VM network/mount policy is unchanged. Upstream internal/runtime features remain enabled where needed. No MCP servers are preconfigured; projects may configure their own. To opt in, add only the desired settings to a **trusted** project's `.codex/config.toml`, for example:
+
+```toml
+web_search = "live"
+
+[features]
+apps = true
+plugins = true
+
+[skills.bundled]
+enabled = true
+```
+
+Other opt-ins use the corresponding keys in `config/codex-config.toml`. No managed requirements prevent them. Rebuild the image to apply changed system defaults.
+
 Sandbox context is installed as managed **additive** `additional_developer_instructions` in `/etc/codex/requirements.toml`. It stays separate from built-in model instructions and user developer instructions; normal `AGENTS.md` discovery is preserved and no project instructions file is written. Unlike Tau's runtime-mounted reference, Codex's copy is generated at image build time: rebuild after context changes.
 
-Version updates: change `CODEX_VERSION` in `Containerfile`, verify the official npm package layout and the matching release's configuration/instruction semantics, update tests, then run `make build`. Startup update checks are disabled by default; use image rebuilds rather than `codex update`. Verified against [rust-v0.166.0](https://github.com/openai/codex/releases/tag/rust-v0.166.0): [config layering](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/README.md), [requirements schema](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/config_requirements.rs), and [separate managed developer context](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/core/src/context/world_state/managed_developer_instructions.rs).
+Version updates: change `CODEX_VERSION` in `Containerfile`, verify the official npm package layout and the matching release's configuration/instruction semantics, update tests, then run `make build`. Startup update checks are disabled by default; use image rebuilds rather than `codex update`. Verified against [rust-v0.166.0](https://github.com/openai/codex/releases/tag/rust-v0.166.0): [config layering](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/README.md), [requirements schema](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/config_requirements.rs), [separate managed developer context](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/core/src/context/world_state/managed_developer_instructions.rs), [feature registry](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/features/src/lib.rs), [bundled skill config](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/skills_config.rs), and [system-skill filtering](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/ext/skills/src/host_service.rs).
 
 ## Browser
 
@@ -397,7 +418,7 @@ The test suite covers:
 - **Security tests** — security flags, mount allowlist, dangerous-character rejection.
 - **Project-secret tests** — exact-directory mapping, paired-source sanity checks and reserved names, placeholder injection, and forwarding precedence.
 
-An optional account-free test exercises the actual pinned CLI's app-server JSON-RPC `config/read` and `configRequirements/read`, checking effective system defaults, user/CLI override precedence, and separately loaded managed instructions. Download official `@openai/codex@0.166.0` outside the repository, then run:
+An optional account-free test exercises the actual pinned CLI's app-server JSON-RPC `config/read`, `configRequirements/read`, and `skills/list`, plus evaluated `features list`. It checks system defaults, user/CLI precedence, trusted project opt-in, own-skill discovery under `HOME/.agents/skills`, bundled-skill exclusion/re-enablement, structured user-input defaults/project opt-in, and separately loaded managed instructions. The user-input setting is checked through raw config layers and effective origins because the pinned RPC's `ToolsV2` projection exposes only web-search settings. Download official `@openai/codex@0.166.0` outside the repository, then run:
 
 ```bash
 CODEX_TEST_CLI=/absolute/path/to/codex uv run pytest tests/test_codex.py

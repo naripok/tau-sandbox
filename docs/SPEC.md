@@ -505,6 +505,18 @@ Codex SHALL use independent project-home state under `~/.codex`, with file crede
 
 The lowest-precedence Codex system config SHALL default to `sandbox_mode = "danger-full-access"`, `approval_policy = "never"`, file credential storage, and disabled startup update checks. User/project config, profiles, and explicit CLI flags SHALL retain normal precedence; the launcher SHALL NOT force a bypass flag. Explicit nested sandbox choices SHALL NOT relax outer VM isolation and may require unavailable kernel facilities.
 
+Codex system defaults SHALL retain native shell/file editing (`shell_tool`, `unified_exec`) and multi-agent tasks (`multi_agent`), without claiming an exact mapping to Tau's read/write/edit/bash API. Web search SHALL default to `disabled`. Apps/connectors, plugins and remote plugin discovery/sharing, browser/computer use, image generation/viewing, remote skill search, automatic skill MCP dependency installation, tool suggestions, structured user-input tools (`tools.experimental_request_user_input.enabled = false`), sleep, goals, hooks, workspace dependencies, and memories SHALL default off. The user-input setting SHALL suppress both synchronous and model-advertised asynchronous request-user-input tools and remain re-enableable by trusted project config. The plan tool already defaults off. Model-advertised clock and experimental messaging/test tool registrations lack separate supported disable settings; exact tool exposure SHALL be documented as model-dependent, not a strict allowlist. Analytics, feedback uploads, and OTEL log/trace/metrics exporters SHALL default off. Removed personality flags, desktop-only flags, and unrelated internal runtime/protocol defaults SHALL NOT be exhaustively configured.
+
+`skills.bundled.enabled = false` SHALL exclude System-scope bundled skills without hiding user skills under mounted `/home/tau/.agents/skills`, project `.agents/skills`, or project-home `~/.codex/skills`. Existing bundled caches SHALL NOT be deleted. These settings SHALL remain ordinary config defaults, not managed feature constraints; trusted project `.codex/config.toml` SHALL be able to opt into optional features and bundled skills. They SHALL NOT be represented as a strict tool allowlist or restriction on shell access to installed utilities/network.
+
+#### Scenario: Minimal Codex with own skills and project opt-in
+
+- GIVEN system defaults and a user skill at `HOME/.agents/skills/example/SKILL.md`
+- WHEN the pinned CLI evaluates features and lists skills without login
+- THEN shell execution and multi-agent support SHALL be enabled, optional configured features SHALL be disabled, the user skill SHALL be enabled, and System-scope skills SHALL be absent
+- WHEN a trusted project enables apps, live web search, structured user-input tools, and bundled skills in `.codex/config.toml`
+- THEN its effective config SHALL override the defaults and System-scope skills SHALL be available alongside the user skill
+
 The image SHALL generate `/etc/codex/requirements.toml` with `additional_developer_instructions` containing the sandbox reference. This managed additive context SHALL NOT replace built-in instructions or write project `AGENTS.md`. Codex's copy SHALL refresh through image rebuilds; Tau SHALL continue using the runtime-mounted reference. Version updates SHALL verify these mechanisms against the pinned official source.
 
 #### Scenario: Explicit Codex execution choices survive
