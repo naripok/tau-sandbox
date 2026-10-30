@@ -1,0 +1,6 @@
+# The microVM is the outer sandbox. These are defaults, not managed policy:
+# user/project config, profiles, and explicit CLI options take precedence.
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+cli_auth_credentials_store = "file"
+check_for_update_on_startup = false

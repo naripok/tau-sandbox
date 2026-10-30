@@ -497,6 +497,29 @@ Additional explicit append options SHALL remain in caller order and therefore co
 - WHEN Tau starts
 - THEN the sandbox reference SHALL precede the caller's append input
 
+### Requirement: Codex in the existing project sandbox
+
+The image SHALL install the official npm `@openai/codex` release pinned by `CODEX_VERSION` (currently `0.166.0`), preserving its native optional package and resources. The `codex` launcher SHALL forward caller arguments unchanged through the official package entrypoint. `run.sh` SHALL remain command-agnostic.
+
+Codex SHALL use independent project-home state under `~/.codex`, with file credential storage by default. Host Codex config and credentials SHALL NOT be copied or mounted. Tau and Codex SHALL be documented as mutually trusted same-UID processes able to access each other's local credentials. Device-auth login SHALL be documented separately from Tau's host login helper. Reset SHALL remove both agents' state with the project home volume.
+
+The lowest-precedence Codex system config SHALL default to `sandbox_mode = "danger-full-access"`, `approval_policy = "never"`, file credential storage, and disabled startup update checks. User/project config, profiles, and explicit CLI flags SHALL retain normal precedence; the launcher SHALL NOT force a bypass flag. Explicit nested sandbox choices SHALL NOT relax outer VM isolation and may require unavailable kernel facilities.
+
+The image SHALL generate `/etc/codex/requirements.toml` with `additional_developer_instructions` containing the sandbox reference. This managed additive context SHALL NOT replace built-in instructions or write project `AGENTS.md`. Codex's copy SHALL refresh through image rebuilds; Tau SHALL continue using the runtime-mounted reference. Version updates SHALL verify these mechanisms against the pinned official source.
+
+#### Scenario: Explicit Codex execution choices survive
+
+- GIVEN the caller selects a sandbox mode or approval policy through CLI or config
+- WHEN Codex launches
+- THEN the caller's choices SHALL override system defaults normally
+- AND the wrapper SHALL forward the original arguments unchanged
+
+#### Scenario: Independent login persists
+
+- GIVEN the user completes `codex login --device-auth` for a project
+- WHEN the project starts a new sandbox
+- THEN Codex SHALL load its own persisted authentication without copying Tau or host credentials
+
 ### Requirement: Hardened guest execution
 
 The sandbox SHALL:

@@ -12,6 +12,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/home/tau` | Read-write persistent per-project home for tools, shell state, and other files |
 | `/home/tau/.tau/*` | Writable per-project Tau config, refreshed from host config on every start when host-managed |
 | `/etc/tau-sandbox/bootstrap/tau/*` | Read-only, recursively dereferenced snapshots of host Tau config used for startup synchronization |
+| `/home/tau/.codex/` | Independent persistent Codex config, sessions, and file-backed `auth.json`; no host Codex state is copied |
 | `/home/tau/.tau/credentials.json` | Project-local credential file in the per-project home, read-write; the host credential is never mounted |
 | `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Links to read-write persistent per-project volumes; host history is not mounted |
 | `/var/lib/tau-sandbox/sessions/`, `/var/lib/tau-sandbox/logs/` | Backing mounts for Tau's session and log links |
@@ -29,6 +30,7 @@ Host Tau config symlinks are dereferenced into temporary snapshots before mounti
 - Runs as unprivileged UID 1000, without root or sudo.
 - Microsandbox's `restricted` profile drops capabilities, enables no-new-privileges, and hardens mounts.
 - Image binaries have setuid and setgid bits removed.
+- Tau and Codex are mutually trusted processes running as the same user in this project. Each can read the other's local credentials and state; separate credential formats are not an access-control boundary.
 
 ## Secrets
 
@@ -41,7 +43,7 @@ Host variables reach the VM in two forms. Ordinary forwarded variables carry the
 - **Languages:** Python, pip, uv, Node.js, npm
 - **System:** bash, git, gcc, make, rsync, fd, ripgrep, ast-grep, openssh, curl, certutil, tar
 - **Browser:** `browser` drives the preinstalled headless Chromium over the Chrome DevTools Protocol (DevTools endpoint bound to 127.0.0.1, guest-local; cookies persist in `~/.local/state/browser/profile`). Common commands: `browser open <url>`, `browser outline` (numbered interactive elements), `browser click <n>`, `browser fill <n> <text>`, `browser text`, `browser screenshot [path] [--full]`, `browser eval <js>`, `browser tabs` / `newtab <url>` / `close`. Run `browser --help` for all commands.
-- **Agent:** `tau`
+- **Agents:** `tau` and `codex` (official CLI, image-pinned). Codex defaults to `danger-full-access` and approval policy `never` because the microVM provides isolation. User/project config, profiles, and explicit CLI flags override these system defaults; an inner sandbox may require kernel features unavailable in the VM. Codex defaults to file credential storage and disabled startup update checks. Log in separately with `codex login --device-auth`; this does not log Tau in.
 
 Bash is the default shell. User installs persist under `~/.local` (`pip --user`, `uv tool install`, `npm install -g`); `PATH` and the package-manager environment are configured accordingly. npm lifecycle scripts are disabled by default; opt in per command with `--ignore-scripts=false`.
 
@@ -59,6 +61,8 @@ The next run requires user approval before building the package-specific image. 
 - Defaults are 4 vCPUs, 8 GB memory, and 8192 processes; `TAU_CPUS`, `TAU_MEM`, and `TAU_PIDS` override them.
 
 ## System prompt
+
+Codex receives an image-build copy of this reference through `/etc/codex/requirements.toml`'s additive `additional_developer_instructions`. Built-in instructions and normal `AGENTS.md` discovery remain intact. Rebuild the image when this reference changes.
 
 The immutable Tau wrapper supplies this reference explicitly. Additional `--append-system-prompt` inputs are combined with it in command-line order; because explicit inputs disable Tau's automatic user/project `APPEND_SYSTEM.md` discovery, pass every additional append file explicitly.
 
