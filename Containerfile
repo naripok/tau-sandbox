@@ -6,7 +6,7 @@ ARG EXTRA_PACKAGES=""
 
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
-      python python-pip uv nodejs npm git openssh bash which fd ripgrep \
+      python python-pip uv nodejs npm git github-cli openssh bash which fd ripgrep \
       diffutils gcc make rsync ast-grep curl ca-certificates nss tar \
       chromium ttf-liberation \
       ${EXTRA_PACKAGES} || \

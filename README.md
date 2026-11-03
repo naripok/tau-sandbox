@@ -42,7 +42,7 @@ The first run of `tau-sandbox` builds the Arch Linux image. It loads the image i
 
 ## Per-Project System Dependencies
 
-The sandbox image ships with a fixed set of tools: Python, uv, Node.js, git, gcc, and more. If your project needs additional system-level packages (CMake, libffi, ffmpeg), declare them in a `.tau-packages` file in the project root:
+The sandbox image ships with a fixed set of tools: Python, uv, Node.js, git, gh (github-cli), gcc, and more. If your project needs additional system-level packages (CMake, libffi, ffmpeg), declare them in a `.tau-packages` file in the project root:
 
 ```
 # Build tools
