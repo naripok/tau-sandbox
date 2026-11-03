@@ -13,7 +13,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/home/tau/.tau/*` | Writable per-project Tau config, refreshed from host config on every start when host-managed |
 | `/etc/tau-sandbox/bootstrap/codex/*` | Read-only snapshots of Codex config resources (`config.toml`, `AGENTS.md`, `AGENTS.override.md`, `instructions.md`, `skills`, `rules`, `prompts`, `agents`); credentials and runtime state are excluded |
 | `/etc/tau-sandbox/bootstrap/tau/*` | Read-only, recursively dereferenced snapshots of host Tau config used for startup synchronization |
-| `/home/tau/.codex/` | Writable persistent Codex config refreshed from the nearest ancestor `.codex` (or `~/.codex`, overridden by `TAU_CODEX_CONFIG_DIR`); sessions and file-backed `auth.json` stay project-local |
+| `/home/tau/.codex/` | Writable persistent Codex config refreshed from host user `~/.codex` (overridden by `TAU_CODEX_CONFIG_DIR`); sessions and file-backed `auth.json` stay project-local |
 | `/home/tau/.tau/credentials.json` | Project-local credential file in the per-project home, read-write; the host credential is never mounted |
 | `/home/tau/.tau/sessions/`, `/home/tau/.tau/logs/` | Links to read-write persistent per-project volumes; host history is not mounted |
 | `/var/lib/tau-sandbox/sessions/`, `/var/lib/tau-sandbox/logs/` | Backing mounts for Tau's session and log links |
@@ -22,7 +22,7 @@ You run as `tau` in a hardware-isolated Arch Linux microsandbox microVM with its
 | `/tmp` | Read-write tmpfs, discarded after each run |
 | `/` | Ephemeral writable root overlay, discarded after each run |
 
-Host-managed Tau config is refreshed into the writable project home whenever the sandbox starts. Host changes, additions, and removals therefore appear on the next start; sandbox edits to host-managed resources last only for the current run. Config created only inside the sandbox remains persistent. `tau-sandbox --reset` deletes the per-project home, sessions, and logs, including the project credential. Host config remains untouched by reset.
+Project `.tau` and `.codex` config is discovered directly in `/workspace`, without copying it into the sandbox home. Host-managed Tau config is refreshed into the writable project home whenever the sandbox starts. Host changes, additions, and removals therefore appear on the next start; sandbox edits to host-managed resources last only for the current run. Config created only inside the sandbox remains persistent. `tau-sandbox --reset` deletes the per-project home, sessions, and logs, including the project credential. Host config remains untouched by reset.
 
 Host Tau config symlinks are dereferenced into temporary snapshots before mounting. Other projects, the rest of the host home, host SSH keys (unless copied through a Tau config link), unrelated dotfiles, host sockets, and paths outside the declared mounts are inaccessible.
 

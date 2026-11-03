@@ -384,87 +384,33 @@ def test_run_script_skips_missing_host_config_mounts(tmp_path):
     assert ":/var/lib/tau-sandbox/logs" in run_line
 
 
-def test_run_script_discovers_nearest_ancestor_tau_config(tmp_path):
-    """With TAU_CONFIG_DIR unset, the closest ancestor's .tau directory
-    supplies the host config; the snapshotted settings.json proves which
-    dir won and credentials.json is never mounted."""
-    (tmp_path / ".env").write_text("")
+def test_run_script_syncs_user_tau_config_without_project_config(tmp_path):
+    home = tmp_path / "home"
     project = tmp_path / "project"
-    workdir = project / "nested" / "dir"
-    workdir.mkdir(parents=True)
-    tau = project / ".tau"
-    tau.mkdir()
-    (tau / "settings.json").write_text('{"scope": "project"}\n')
-    (tau / "credentials.json").write_text('{"openai": "sk-project"}\n')
-
-    snapshot_contents = tmp_path / "snapshot-contents"
-    result, msb_log, _ = invoke_run(
-        "bash", cwd=workdir,
-        env={"MSB_SNAPSHOT_CONTENTS": str(snapshot_contents)},
+    work = project / "nested"
+    work.mkdir(parents=True)
+    for directory, value in ((home / ".tau", "home"),
+                             (project / ".tau", "outer"),
+                             (work / ".tau", "project")):
+        directory.mkdir(parents=True)
+        (directory / "settings.json").write_text(value)
+        (directory / "project-only.json").write_text(value)
+    (home / ".tau" / "project-only.json").unlink()
+    contents = tmp_path / "snapshot"
+    result, log, _ = invoke_run(
+        "bash", cwd=work, home=home,
+        env={"MSB_SNAPSHOT_CONTENTS": str(contents)},
     )
-    assert result.returncode == 0
-    run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
-    assert 'settings.json\t{"scope": "project"}' in snapshot_contents.read_text()
+    assert result.returncode == 0, result.stderr
+    snapshot = contents.read_text()
+    assert "settings.json\thome" in snapshot
+    assert "project-only.json" not in snapshot
+    run_line = next(line for line in log if line.startswith("msb run"))
+    assert f"{work}:/workspace" in run_line
 
 
-def test_run_script_innermost_ancestor_tau_config_wins(tmp_path):
-    """Nested project configs shadow outer ones: closest ancestor wins, so
-    a repo inside a configured project can override the project config."""
-    (tmp_path / ".env").write_text("")
-    project = tmp_path / "project"
-    workdir = project / "inner" / "sub"
-    workdir.mkdir(parents=True)
-    outer_tau = project / ".tau"
-    inner_tau = project / "inner" / ".tau"
-    outer_tau.mkdir()
-    inner_tau.mkdir()
-    (outer_tau / "settings.json").write_text('{"scope": "outer"}\n')
-    (outer_tau / "credentials.json").write_text('{"openai": "sk-outer"}\n')
-    (inner_tau / "settings.json").write_text('{"scope": "inner"}\n')
-    (inner_tau / "credentials.json").write_text('{"openai": "sk-inner"}\n')
-
-    snapshot_contents = tmp_path / "snapshot-contents"
-    result, msb_log, _ = invoke_run(
-        "bash", cwd=workdir,
-        env={"MSB_SNAPSHOT_CONTENTS": str(snapshot_contents)},
-    )
-    assert result.returncode == 0
-    run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
-    snapshot = snapshot_contents.read_text()
-    assert 'settings.json\t{"scope": "inner"}' in snapshot
-    assert '{"scope": "outer"}' not in snapshot
-
-
-def test_run_script_discovers_tau_config_through_root_symlink(tmp_path):
-    """A project-root .tau symlink to an external config world is followed:
-    the world's real paths appear, so secrets can live outside the tree."""
-    (tmp_path / ".env").write_text("")
-    project = tmp_path / "project"
-    workdir = project / "src"
-    workdir.mkdir(parents=True)
-    world = tmp_path / "config-world"
-    world.mkdir()
-    (world / "settings.json").write_text('{"scope": "world"}\n')
-    (world / "credentials.json").write_text('{"openai": "sk-world"}\n')
-    (project / ".tau").symlink_to(world, target_is_directory=True)
-
-    snapshot_contents = tmp_path / "snapshot-contents"
-    result, msb_log, _ = invoke_run(
-        "bash", cwd=workdir,
-        env={"MSB_SNAPSHOT_CONTENTS": str(snapshot_contents)},
-    )
-    assert result.returncode == 0
-    run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "credentials.json" not in run_line
-    assert 'settings.json\t{"scope": "world"}' in snapshot_contents.read_text()
-
-
-def test_run_script_tau_config_dir_override_beats_discovery(tmp_path):
-    """An explicitly set TAU_CONFIG_DIR always wins over a discovered .tau,
-    preserving the documented override for tests and automation."""
+def test_run_script_tau_config_dir_override(tmp_path):
+    """An explicit TAU_CONFIG_DIR selects the user-config synchronization source."""
     (tmp_path / ".env").write_text("")
     project = tmp_path / "project"
     workdir = project / "src"
@@ -486,23 +432,6 @@ def test_run_script_tau_config_dir_override_beats_discovery(tmp_path):
     assert "credentials.json" not in run_line
     assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
     assert 'settings.json\t{"scope": "override"}' in snapshot_contents.read_text()
-
-
-def test_run_script_dangling_tau_symlink_falls_back_to_default(tmp_path):
-    """A dangling .tau link is not a config directory, so discovery keeps
-    walking and the default config applies instead of aborting."""
-    (tmp_path / ".env").write_text("")
-    project = tmp_path / "project"
-    workdir = project / "src"
-    workdir.mkdir(parents=True)
-    (project / ".tau").symlink_to(
-        tmp_path / "missing-world", target_is_directory=True
-    )
-
-    result, msb_log, _ = invoke_run("bash", cwd=workdir)
-    assert result.returncode == 0
-    run_line = next(line for line in msb_log if line.startswith("msb run"))
-    assert "TAU_SANDBOX_SHARED_CREDENTIALS" not in run_line
 
 
 def test_run_script_resources_are_overridable(tmp_path):
@@ -1218,7 +1147,7 @@ def _bootstrap_stage_path(run_line):
     return pathlib.Path(match.group(1))
 
 
-def test_codex_config_discovery_override_and_fallback(tmp_path):
+def test_codex_user_config_sync_and_override(tmp_path):
     home = tmp_path / "home"
     outer = tmp_path / "project"
     inner = outer / "inner"
@@ -1233,10 +1162,11 @@ def test_codex_config_discovery_override_and_fallback(tmp_path):
         (directory / "config.toml").write_text(value)
         (directory / "auth.json").write_text("private")
         (directory / "sessions").mkdir()
-    # Resolve a config symlink while still on the host.
+    (inner / ".codex" / "instructions.md").write_text("project-only")
+    # Project symlinks must not become user config.
     (inner / ".codex").rename(inner / "config-world")
     (inner / ".codex").symlink_to(inner / "config-world", target_is_directory=True)
-    for cwd, env, expected in ((work, {}, "inner"), (work, {"TAU_CODEX_CONFIG_DIR": str(override)}, "override"),
+    for cwd, env, expected in ((work, {}, "home"), (work, {"TAU_CODEX_CONFIG_DIR": str(override)}, "override"),
                                (home, {}, "home")):
         contents = tmp_path / "codex-snapshot"
         contents.unlink(missing_ok=True)
@@ -1246,6 +1176,7 @@ def test_codex_config_discovery_override_and_fallback(tmp_path):
         run_line = next(line for line in log if line.startswith("msb run"))
         assert ":/etc/tau-sandbox/bootstrap/codex/config.toml:ro" in run_line
         assert "config.toml\t" + expected in contents.read_text()
+        assert "instructions.md" not in contents.read_text()
         assert "/codex/auth.json" not in run_line
         assert "/codex/sessions" not in run_line
         assert not _bootstrap_stage_path(run_line).exists()
