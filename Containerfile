@@ -47,7 +47,7 @@ RUN python -m venv /opt/tau && \
 # Official Codex CLI npm distribution, including its architecture-specific
 # optional native package. Keep the complete package layout (resources and rg).
 # No lifecycle scripts are needed; update only by rebuilding the image.
-ARG CODEX_VERSION=0.166.0
+ARG CODEX_VERSION=0.167.1
 RUN npm install --prefix /opt/codex --ignore-scripts --no-audit --no-fund \
       "@openai/codex@${CODEX_VERSION}" && \
     /usr/bin/node /opt/codex/node_modules/@openai/codex/bin/codex.js --version
